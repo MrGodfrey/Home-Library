@@ -1,0 +1,7 @@
+{
+  "name": "家藏万卷 - 图书管理系统",
+  "description": "一个简洁的家庭藏书管理系统，支持成都与重庆两地分类、ISBN 扫码录入及移动端适配。",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

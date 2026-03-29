@@ -1,0 +1,97 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: books
+// Document ID: auto-generated
+// Fields:
+//   - title: string (required) - 书名
+//   - author: string (optional) - 作者
+//   - publisher: string (optional) - 出版社
+//   - year: string (optional) - 出版年份
+//   - isbn: string (optional) - ISBN 号
+//   - location: string (required, enum: ["成都", "重庆"]) - 书籍所在地
+//   - status: string (required, enum: ["在家", "不在家"]) - 书籍当前状态
+//   - coverUrl: string (optional) - 封面图片链接
+//   - userId: string (required) - 所属用户的 UID
+//   - createdAt: timestamp (required) - 创建时间
+//
+// Collection: users
+// Document ID: userId (from Firebase Auth)
+// Fields:
+//   - email: string (required, email format) - 用户邮箱
+//   - role: string (required, enum: ["admin", "user"]) - 用户角色
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "yuwangoverseas@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidBook(data) {
+      return data.keys().hasAll(['title', 'location', 'status', 'userId']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.location in ['成都', '重庆'] &&
+             data.status in ['在家', '不在家'] &&
+             data.userId == request.auth.uid &&
+             (data.get('isbn', '') is string) &&
+             (data.get('author', '') is string) &&
+             (data.get('publisher', '') is string) &&
+             (data.get('year', '') is string);
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'role']) &&
+             data.email is string &&
+             data.role in ['admin', 'user'];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                              (request.resource.data.role == 'user' || isAdmin());
+    }
+
+    match /books/{bookId} {
+      // 只有登录用户可以查看所有书籍（因为是家庭系统，两个用户共享）
+      allow read: if isAuthenticated();
+      
+      allow create: if isAuthenticated() && isValidBook(request.resource.data);
+      
+      allow update: if isAuthenticated() && isValidBook(request.resource.data) && 
+                      (isDocOwner() || isAdmin());
+      
+      allow delete: if isAuthenticated() && (isDocOwner() || isAdmin());
+    }
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "Book": {
+      "title": "书籍信息",
+      "description": "存储藏书的详细信息，包括位置和状态。",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "书名"
+        },
+        "author": {
+          "type": "string",
+          "description": "作者"
+        },
+        "publisher": {
+          "type": "string",
+          "description": "出版社"
+        },
+        "year": {
+          "type": "string",
+          "description": "出版年份"
+        },
+        "isbn": {
+          "type": "string",
+          "description": "ISBN 号"
+        },
+        "location": {
+          "type": "string",
+          "enum": ["成都", "重庆"],
+          "description": "书籍所在地"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["在家", "不在家"],
+          "description": "书籍当前状态"
+        },
+        "coverUrl": {
+          "type": "string",
+          "description": "封面图片链接"
+        },
+        "userId": {
+          "type": "string",
+          "description": "所属用户的 UID"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "创建时间"
+        }
+      },
+      "required": ["title", "location", "status", "userId"]
+    },
+    "User": {
+      "title": "用户信息",
+      "description": "存储用户的基本信息和权限。",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "用户邮箱"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "user"],
+          "description": "用户角色"
+        }
+      },
+      "required": ["email", "role"]
+    }
+  },
+  "firestore": {
+    "/books/{bookId}": {
+      "schema": "Book",
+      "description": "藏书集合"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "用户配置集合"
+    }
+  }
+}
