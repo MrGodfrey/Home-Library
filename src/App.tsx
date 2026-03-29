@@ -1,104 +1,364 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, useEffect, useRef } from 'react';
-import { 
-  auth, 
-  db, 
-  googleProvider, 
-  signInWithPopup, 
-  signOut, 
-  onAuthStateChanged, 
-  collection, 
-  doc, 
-  setDoc, 
-  getDoc, 
-  query, 
-  where, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  serverTimestamp,
-  handleFirestoreError,
-  OperationType,
-  User 
-} from './firebase';
-import { 
-  Search, 
-  Plus, 
-  ScanLine, 
-  MapPin, 
-  Home, 
-  LogOut, 
-  Trash2, 
-  Edit2, 
-  X, 
-  Loader2, 
+import {useEffect, useRef, useState, type FormEvent} from 'react';
+import {
+  AlertCircle,
   BookOpen,
-  CheckCircle2,
-  AlertCircle
+  Loader2,
+  LogOut,
+  Plus,
+  RefreshCcw,
+  ScanLine,
+  Search,
+  ShieldCheck,
+  Trash2,
+  Edit2,
+  X,
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Toaster, toast } from 'sonner';
-import { Html5QrcodeScanner } from 'html5-qrcode';
+import {AnimatePresence, motion} from 'motion/react';
+import {Toaster, toast} from 'sonner';
+import {
+  createBook,
+  getRuntimeLabel,
+  getSession,
+  listBooks,
+  logout,
+  removeBook,
+  updateBook,
+  type Book,
+  type BookDraft,
+  type SessionInfo,
+} from './lib/library';
 
-// --- Types ---
-interface Book {
-  id: string;
-  title: string;
-  author?: string;
-  publisher?: string;
-  year?: string;
-  isbn?: string;
-  location: '成都' | '重庆';
-  status: '在家' | '不在家';
-  coverUrl?: string;
-  userId: string;
-  createdAt: any;
+const emptyForm: BookDraft = {
+  title: '',
+  author: '',
+  publisher: '',
+  year: '',
+  isbn: '',
+  location: '成都',
+  status: '在家',
+  coverUrl: '',
+};
+
+function BootScreen({label}: {label: string}) {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#f6f6f1] p-6">
+      <div className="bg-white rounded-3xl border border-gray-100 shadow-xl px-10 py-12 text-center max-w-sm w-full">
+        <Loader2 className="animate-spin text-green-700 mx-auto mb-4" size={40} />
+        <p className="text-sm uppercase tracking-[0.3em] text-gray-400 mb-2">家藏万卷</p>
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">正在初始化书库</h1>
+        <p className="text-gray-500">{label}</p>
+      </div>
+    </div>
+  );
 }
 
-// --- Components ---
+function ProtectedNotice({message, onRetry}: {message: string; onRetry: () => void}) {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#f6f6f1] p-6">
+      <div className="max-w-md w-full rounded-3xl bg-white border border-gray-100 shadow-xl p-8 text-center">
+        <div className="w-20 h-20 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-6">
+          <ShieldCheck size={40} className="text-emerald-700" />
+        </div>
+        <h1 className="text-3xl font-bold text-gray-900 mb-3">此站点受 Access 保护</h1>
+        <p className="text-gray-500 leading-7 mb-8">{message}</p>
+        <button
+          onClick={onRetry}
+          className="w-full py-3 rounded-2xl bg-emerald-700 text-white font-bold hover:bg-emerald-800 transition-colors"
+        >
+          重新检测会话
+        </button>
+      </div>
+    </div>
+  );
+}
 
-const ErrorBoundary = ({ children }: { children: React.ReactNode }) => {
-  const [hasError, setHasError] = useState(false);
-  const [errorInfo, setErrorInfo] = useState<any>(null);
+export default function App() {
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [isBooting, setIsBooting] = useState(true);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const [books, setBooks] = useState<Book[]>([]);
+  const [isBooksLoading, setIsBooksLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeTab, setActiveTab] = useState<'全部' | '成都' | '重庆'>('全部');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [editingBook, setEditingBook] = useState<Book | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [activeBookId, setActiveBookId] = useState<string | null>(null);
+  const [formData, setFormData] = useState<BookDraft>(emptyForm);
+  const scannerRef = useRef<{clear: () => Promise<void>} | null>(null);
+
+  async function loadBooks() {
+    setIsBooksLoading(true);
+
+    try {
+      const nextBooks = await listBooks();
+      setBooks(nextBooks);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '加载藏书失败。';
+      toast.error(message);
+    } finally {
+      setIsBooksLoading(false);
+    }
+  }
+
+  async function bootstrap() {
+    setIsBooting(true);
+    setBootstrapError(null);
+
+    try {
+      const nextSession = await getSession();
+      setSession(nextSession);
+
+      if (nextSession.authenticated) {
+        await loadBooks();
+      } else {
+        setBooks([]);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '初始化失败。';
+      setBootstrapError(message);
+    } finally {
+      setIsBooting(false);
+    }
+  }
+
+  async function stopScanner() {
+    const scanner = scannerRef.current;
+
+    if (scanner) {
+      try {
+        await scanner.clear();
+      } catch {
+        // Ignore scanner cleanup errors.
+      }
+    }
+
+    scannerRef.current = null;
+    setIsScanning(false);
+  }
 
   useEffect(() => {
-    const handleError = (event: ErrorEvent) => {
-      if (event.error?.message) {
-        try {
-          const parsed = JSON.parse(event.error.message);
-          if (parsed.error && parsed.operationType) {
-            setHasError(true);
-            setErrorInfo(parsed);
-          }
-        } catch (e) {
-          // Not a JSON error
-        }
-      }
+    void bootstrap();
+
+    return () => {
+      void stopScanner();
     };
-    window.addEventListener('error', handleError);
-    return () => window.removeEventListener('error', handleError);
   }, []);
 
-  if (hasError) {
+  async function fetchBookInfo(isbn: string) {
+    const cleanIsbn = isbn.replace(/[-\s]/g, '');
+
+    if (!cleanIsbn) {
+      toast.error('请先输入或扫描 ISBN。');
+      return;
+    }
+
+    toast.loading('正在获取书籍信息...', {id: 'isbn-fetch'});
+
+    try {
+      const googleResponse = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${cleanIsbn}`);
+      const googleData = (await googleResponse.json()) as {
+        items?: Array<{
+          volumeInfo?: {
+            title?: string;
+            authors?: string[];
+            publisher?: string;
+            publishedDate?: string;
+            imageLinks?: {thumbnail?: string};
+          };
+        }>;
+      };
+
+      if (googleData.items?.length) {
+        const info = googleData.items[0].volumeInfo;
+
+        setFormData((current) => ({
+          ...current,
+          title: info?.title || '',
+          author: info?.authors?.join(', ') || '',
+          publisher: info?.publisher || '',
+          year: info?.publishedDate || '',
+          isbn: cleanIsbn,
+          coverUrl: info?.imageLinks?.thumbnail?.replace('http:', 'https:') || '',
+        }));
+
+        toast.success('已从 Google Books 自动补全。', {id: 'isbn-fetch'});
+        return;
+      }
+
+      const openLibraryResponse = await fetch(
+        `https://openlibrary.org/api/books?bibkeys=ISBN:${cleanIsbn}&format=json&jscmd=data`,
+      );
+      const openLibraryData = (await openLibraryResponse.json()) as Record<
+        string,
+        {
+          title?: string;
+          publish_date?: string;
+          cover?: {large?: string; medium?: string};
+          authors?: Array<{name?: string}>;
+          publishers?: Array<{name?: string}>;
+        }
+      >;
+      const bookData = openLibraryData[`ISBN:${cleanIsbn}`];
+
+      if (bookData) {
+        setFormData((current) => ({
+          ...current,
+          title: bookData.title || '',
+          author: bookData.authors?.map((item) => item.name).filter(Boolean).join(', ') || '',
+          publisher: bookData.publishers?.map((item) => item.name).filter(Boolean).join(', ') || '',
+          year: bookData.publish_date || '',
+          isbn: cleanIsbn,
+          coverUrl: bookData.cover?.large || bookData.cover?.medium || '',
+        }));
+
+        toast.success('已从 Open Library 自动补全。', {id: 'isbn-fetch'});
+        return;
+      }
+
+      toast.error('没有查到这本书，请手动补录。', {id: 'isbn-fetch'});
+    } catch {
+      toast.error('外部书籍接口不可用，请手动录入。', {id: 'isbn-fetch'});
+    }
+  }
+
+  function openModal(book?: Book) {
+    if (book) {
+      setEditingBook(book);
+      setFormData({
+        title: book.title,
+        author: book.author,
+        publisher: book.publisher,
+        year: book.year,
+        isbn: book.isbn,
+        location: book.location,
+        status: book.status,
+        coverUrl: book.coverUrl,
+      });
+    } else {
+      setEditingBook(null);
+      setFormData({
+        ...emptyForm,
+        location: activeTab === '全部' ? '成都' : activeTab,
+      });
+    }
+
+    setIsModalOpen(true);
+  }
+
+  async function closeModal() {
+    await stopScanner();
+    setEditingBook(null);
+    setFormData(emptyForm);
+    setIsModalOpen(false);
+  }
+
+  function startScanner() {
+    setIsScanning(true);
+
+    window.setTimeout(async () => {
+      try {
+        const {Html5QrcodeScanner} = await import('html5-qrcode');
+        const scanner = new Html5QrcodeScanner('reader', {fps: 10, qrbox: {width: 240, height: 240}}, false);
+        scannerRef.current = scanner;
+        scanner.render(
+          (decodedText) => {
+            void stopScanner();
+            void fetchBookInfo(decodedText);
+          },
+          () => undefined,
+        );
+      } catch {
+        setIsScanning(false);
+        toast.error('扫码模块加载失败，请稍后重试。');
+      }
+    }, 120);
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!session?.authenticated) {
+      toast.error('当前会话未通过认证。');
+      return;
+    }
+
+    setIsSaving(true);
+
+    try {
+      if (editingBook) {
+        await updateBook(editingBook.id, formData);
+        toast.success('书籍信息已更新。');
+      } else {
+        await createBook(formData);
+        toast.success('新书已加入书库。');
+      }
+
+      await closeModal();
+      await loadBooks();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '保存失败。';
+      toast.error(message);
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    setIsDeleting(true);
+
+    try {
+      await removeBook(id);
+      setDeleteConfirmId(null);
+      toast.success('书籍已从书库移除。');
+      await loadBooks();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '删除失败。';
+      toast.error(message);
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
+  function handleLogout() {
+    const redirected = logout(session);
+
+    if (!redirected) {
+      toast.message('当前为本地测试模式，无需退出登录。');
+    }
+  }
+
+  const filteredBooks = books.filter((book) => {
+    const keyword = searchQuery.trim().toLowerCase();
+    const matchesSearch =
+      keyword.length === 0 ||
+      book.title.toLowerCase().includes(keyword) ||
+      book.author.toLowerCase().includes(keyword) ||
+      book.isbn.includes(searchQuery.trim());
+    const matchesTab = activeTab === '全部' || book.location === activeTab;
+
+    return matchesSearch && matchesTab;
+  });
+
+  if (isBooting) {
+    return <BootScreen label="正在确认运行模式与藏书数据源。" />;
+  }
+
+  if (bootstrapError) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-red-50 p-4">
-        <div className="bg-white p-6 rounded-2xl shadow-xl max-w-md w-full border border-red-100">
+      <div className="min-h-screen flex items-center justify-center bg-[#f6f6f1] p-6">
+        <div className="max-w-md w-full bg-white border border-red-100 rounded-3xl shadow-xl p-8">
           <div className="flex items-center gap-3 text-red-600 mb-4">
             <AlertCircle size={24} />
-            <h2 className="text-xl font-bold">系统错误</h2>
+            <h1 className="text-2xl font-bold text-gray-900">初始化失败</h1>
           </div>
-          <p className="text-gray-600 mb-4">操作失败: {errorInfo?.operationType} @ {errorInfo?.path}</p>
-          <pre className="bg-gray-100 p-3 rounded text-xs overflow-auto mb-4 max-h-40">
-            {errorInfo?.error}
-          </pre>
-          <button 
-            onClick={() => window.location.reload()}
-            className="w-full py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
+          <p className="text-gray-600 leading-7 mb-6">{bootstrapError}</p>
+          <button
+            onClick={() => void bootstrap()}
+            className="w-full py-3 rounded-2xl bg-red-600 text-white font-bold hover:bg-red-700 transition-colors"
           >
             重试
           </button>
@@ -107,619 +367,424 @@ const ErrorBoundary = ({ children }: { children: React.ReactNode }) => {
     );
   }
 
-  return <>{children}</>;
-};
-
-export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [books, setBooks] = useState<Book[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'全部' | '成都' | '重庆'>('全部');
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isScanning, setIsScanning] = useState(false);
-  const [editingBook, setEditingBook] = useState<Book | null>(null);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [activeBookId, setActiveBookId] = useState<string | null>(null); // For mobile tap to show actions
-
-  // Form State
-  const [formData, setFormData] = useState({
-    title: '',
-    author: '',
-    publisher: '',
-    year: '',
-    isbn: '',
-    location: '成都' as '成都' | '重庆',
-    status: '在家' as '在家' | '不在家',
-    coverUrl: ''
-  });
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!user) return;
-
-    const q = query(collection(db, 'books'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const booksData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Book[];
-      setBooks(booksData.sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds));
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'books');
-    });
-
-    return () => unsubscribe();
-  }, [user]);
-
-  const handleLogin = async () => {
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const userRef = doc(db, 'users', result.user.uid);
-      const userSnap = await getDoc(userRef);
-      
-      if (!userSnap.exists()) {
-        await setDoc(userRef, {
-          email: result.user.email,
-          role: 'user'
-        });
-      }
-      toast.success('登录成功');
-    } catch (error) {
-      toast.error('登录失败');
-    }
-  };
-
-  const handleLogout = () => signOut(auth);
-
-  const fetchBookInfo = async (isbn: string) => {
-    const cleanIsbn = isbn.replace(/[-\s]/g, '');
-    if (!cleanIsbn) return;
-
-    toast.loading('正在获取书籍信息...', { id: 'isbn-fetch' });
-    
-    try {
-      // 1. Try Google Books API first (Better Chinese support)
-      const googleResponse = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${cleanIsbn}`);
-      const googleData = await googleResponse.json();
-      
-      if (googleData.items && googleData.items.length > 0) {
-        const info = googleData.items[0].volumeInfo;
-        setFormData(prev => ({
-          ...prev,
-          title: info.title || '',
-          author: info.authors?.join(', ') || '',
-          publisher: info.publisher || '',
-          year: info.publishedDate || '',
-          isbn: cleanIsbn,
-          coverUrl: info.imageLinks?.thumbnail?.replace('http:', 'https:') || ''
-        }));
-        toast.success('获取成功 (Google Books)', { id: 'isbn-fetch' });
-        return;
-      }
-
-      // 2. Fallback to Open Library
-      const olResponse = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${cleanIsbn}&format=json&jscmd=data`);
-      const olData = await olResponse.json();
-      const bookData = olData[`ISBN:${cleanIsbn}`];
-
-      if (bookData) {
-        setFormData(prev => ({
-          ...prev,
-          title: bookData.title || '',
-          author: bookData.authors?.map((a: any) => a.name).join(', ') || '',
-          publisher: bookData.publishers?.map((p: any) => p.name).join(', ') || '',
-          year: bookData.publish_date || '',
-          isbn: cleanIsbn,
-          coverUrl: bookData.cover?.large || bookData.cover?.medium || ''
-        }));
-        toast.success('获取成功 (Open Library)', { id: 'isbn-fetch' });
-      } else {
-        toast.error('未找到该书籍信息，请手动录入', { id: 'isbn-fetch' });
-      }
-    } catch (error) {
-      console.error('Fetch error:', error);
-      toast.error('网络请求失败，请手动输入', { id: 'isbn-fetch' });
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) return;
-
-    try {
-      if (editingBook) {
-        await updateDoc(doc(db, 'books', editingBook.id), {
-          ...formData,
-          updatedAt: serverTimestamp()
-        });
-        toast.success('更新成功');
-      } else {
-        await addDoc(collection(db, 'books'), {
-          ...formData,
-          userId: user.uid,
-          createdAt: serverTimestamp()
-        });
-        toast.success('添加成功');
-      }
-      closeModal();
-    } catch (error) {
-      handleFirestoreError(error, editingBook ? OperationType.UPDATE : OperationType.CREATE, 'books');
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    setIsDeleting(true);
-    try {
-      await deleteDoc(doc(db, 'books', id));
-      toast.success('删除成功');
-      setDeleteConfirmId(null);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `books/${id}`);
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
-  const openModal = (book?: Book) => {
-    if (book) {
-      setEditingBook(book);
-      setFormData({
-        title: book.title,
-        author: book.author || '',
-        publisher: book.publisher || '',
-        year: book.year || '',
-        isbn: book.isbn || '',
-        location: book.location,
-        status: book.status,
-        coverUrl: book.coverUrl || ''
-      });
-    } else {
-      setEditingBook(null);
-      setFormData({
-        title: '',
-        author: '',
-        publisher: '',
-        year: '',
-        isbn: '',
-        location: activeTab === '全部' ? '成都' : activeTab,
-        status: '在家',
-        coverUrl: ''
-      });
-    }
-    setIsModalOpen(true);
-  };
-
-  const closeModal = () => {
-    setIsModalOpen(false);
-    setIsScanning(false);
-    setEditingBook(null);
-  };
-
-  const startScanner = () => {
-    setIsScanning(true);
-    setTimeout(() => {
-      const scanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: 250 }, false);
-      scanner.render((decodedText) => {
-        scanner.clear();
-        setIsScanning(false);
-        fetchBookInfo(decodedText);
-      }, (error) => {
-        // console.warn(error);
-      });
-    }, 100);
-  };
-
-  const filteredBooks = books.filter(book => {
-    const matchesSearch = book.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          book.author?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          book.isbn?.includes(searchQuery);
-    const matchesTab = activeTab === '全部' || book.location === activeTab;
-    return matchesSearch && matchesTab;
-  });
-
-  if (loading) {
+  if (!session?.authenticated) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <Loader2 className="animate-spin text-green-600" size={48} />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-[#f6f6f1] p-6">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center max-w-md w-full bg-white p-10 rounded-3xl shadow-xl border border-gray-100"
-        >
-          <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
-            <BookOpen size={40} className="text-green-600" />
-          </div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">家藏万卷</h1>
-          <p className="text-gray-500 mb-8">简洁、优雅的家庭藏书管理系统</p>
-          <button 
-            onClick={handleLogin}
-            className="w-full py-4 bg-green-600 text-white rounded-xl font-bold text-lg shadow-lg shadow-green-200 hover:bg-green-700 transition-all active:scale-95 flex items-center justify-center gap-3"
-          >
-            <img src="https://www.google.com/favicon.ico" className="w-5 h-5 bg-white rounded-full p-0.5" alt="Google" />
-            使用 Google 账号登录
-          </button>
-        </motion.div>
-      </div>
+      <ProtectedNotice
+        message={session?.message || '请先通过 Cloudflare Access 完成认证，然后重新打开此页面。'}
+        onRetry={() => void bootstrap()}
+      />
     );
   }
 
   return (
-    <ErrorBoundary>
-      <div className="min-h-screen bg-[#f6f6f1] pb-24">
-        <Toaster position="top-center" richColors />
-        
-        {/* Header */}
-        <header className="bg-white border-b border-gray-200 sticky top-0 z-30 px-4 py-4">
-          <div className="max-w-5xl mx-auto flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-10 h-10 bg-green-600 rounded-xl flex items-center justify-center shadow-md shadow-green-100">
-                <BookOpen size={24} className="text-white" />
+    <div className="min-h-screen bg-[#f6f6f1] safe-bottom pb-24">
+      <Toaster position="top-center" richColors />
+
+      <header className="sticky top-0 z-30 border-b border-gray-200/80 bg-[#f6f6f1]/95 backdrop-blur px-4 py-4">
+        <div className="max-w-6xl mx-auto flex flex-col gap-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-700 text-white flex items-center justify-center shadow-lg shadow-emerald-200 shrink-0">
+                <BookOpen size={24} />
               </div>
-              <h1 className="text-xl font-bold text-gray-900 hidden sm:block">家藏万卷</h1>
+              <div className="min-w-0">
+                <h1 className="text-2xl font-bold text-gray-900">家藏万卷</h1>
+                <p className="text-sm text-gray-500 truncate">{session.email || '未识别用户'}</p>
+              </div>
             </div>
 
-            <div className="flex-1 max-w-md mx-4 relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-              <input 
-                type="text" 
-                placeholder="搜索书名、作者、ISBN..."
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="hidden sm:inline-flex px-3 py-2 rounded-full bg-white border border-gray-200 text-xs font-semibold text-gray-600">
+                {getRuntimeLabel(session)}
+              </span>
+              <button
+                onClick={() => void bootstrap()}
+                className="p-3 rounded-full bg-white border border-gray-200 text-gray-500 hover:text-emerald-700 transition-colors"
+                title="刷新会话与数据"
+              >
+                <RefreshCcw size={18} />
+              </button>
+              <button
+                onClick={handleLogout}
+                className="p-3 rounded-full bg-white border border-gray-200 text-gray-500 hover:text-red-600 transition-colors"
+                title="退出"
+              >
+                <LogOut size={18} />
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
+            <div className="relative">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <input
+                type="text"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 bg-gray-100 border-transparent focus:bg-white focus:ring-2 focus:ring-green-500 rounded-full transition-all outline-none text-sm"
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="搜索书名、作者或 ISBN"
+                className="w-full rounded-full bg-white border border-gray-200 pl-11 pr-4 py-3 outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
               />
             </div>
 
-            <button 
-              onClick={handleLogout}
-              className="p-2 text-gray-400 hover:text-red-500 transition-colors"
-              title="退出登录"
-            >
-              <LogOut size={20} />
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {(['全部', '成都', '重庆'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-5 py-2.5 rounded-full text-sm font-semibold transition-all ${
+                    activeTab === tab
+                      ? 'bg-emerald-700 text-white shadow-md shadow-emerald-200'
+                      : 'bg-white text-gray-600 border border-gray-200 hover:border-emerald-200 hover:text-emerald-700'
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
           </div>
-        </header>
 
-        {/* Tabs */}
-        <div className="max-w-5xl mx-auto px-4 mt-6">
-          <div className="flex gap-2 p-1 bg-gray-200/50 rounded-xl w-fit">
-            {(['全部', '成都', '重庆'] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-6 py-2 rounded-lg text-sm font-medium transition-all ${
-                  activeTab === tab 
-                    ? 'bg-white text-green-700 shadow-sm' 
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
+          {session.message && (
+            <div className="rounded-2xl bg-white/80 border border-emerald-100 px-4 py-3 text-sm text-gray-600">
+              {session.message}
+            </div>
+          )}
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 pt-8">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <p className="text-sm uppercase tracking-[0.25em] text-gray-400 mb-1">家庭书库</p>
+            <h2 className="text-2xl font-bold text-gray-900">共 {filteredBooks.length} 本可见藏书</h2>
           </div>
+
+          {isBooksLoading && (
+            <div className="inline-flex items-center gap-2 text-sm text-gray-500">
+              <Loader2 className="animate-spin" size={16} />
+              正在同步
+            </div>
+          )}
         </div>
 
-        {/* Book Grid */}
-        <main className="max-w-5xl mx-auto px-4 mt-8">
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
-            <AnimatePresence mode="popLayout">
-              {filteredBooks.map((book) => (
-                <motion.div 
-                  key={book.id}
-                  layout
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.9 }}
-                  onClick={() => setActiveBookId(activeBookId === book.id ? null : book.id)}
-                  className="group relative bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-xl transition-all border border-gray-100 cursor-pointer"
-                >
-                  <div className="aspect-[3/4] bg-gray-100 relative overflow-hidden">
-                    {book.coverUrl ? (
-                      <img 
-                        src={book.coverUrl} 
-                        alt={book.title}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                        referrerPolicy="no-referrer"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center">
-                        <BookOpen size={40} className="text-gray-300 mb-2" />
-                        <span className="text-xs text-gray-400 font-medium">{book.title}</span>
-                      </div>
-                    )}
-                    
-                    {/* Status Badges */}
-                    <div className="absolute top-2 left-2 flex flex-col gap-1">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold text-white shadow-sm ${
-                        book.location === '成都' ? 'bg-blue-500' : 'bg-orange-500'
-                      }`}>
-                        {book.location}
-                      </span>
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold text-white shadow-sm ${
-                        book.status === '在家' ? 'bg-green-500' : 'bg-red-500'
-                      }`}>
-                        {book.status}
-                      </span>
-                    </div>
-
-                    {/* Actions Overlay - Improved for Mobile */}
-                    <div className={`absolute inset-0 bg-black/40 transition-opacity flex items-center justify-center gap-3 ${
-                      activeBookId === book.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                    }`}>
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); openModal(book); }}
-                        className="p-3 bg-white rounded-full text-gray-700 hover:text-green-600 transition-colors shadow-lg active:scale-90"
-                      >
-                        <Edit2 size={18} />
-                      </button>
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(book.id); }}
-                        className="p-3 bg-white rounded-full text-gray-700 hover:text-red-600 transition-colors shadow-lg active:scale-90"
-                      >
-                        <Trash2 size={18} />
-                      </button>
-                    </div>
-                  </div>
-                  
-                  <div className="p-3">
-                    <h3 className="font-bold text-gray-900 text-sm line-clamp-1 mb-0.5">{book.title}</h3>
-                    <p className="text-xs text-gray-500 line-clamp-1">{book.author || '未知作者'}</p>
-                  </div>
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          </div>
-
-          {filteredBooks.length === 0 && (
-            <div className="text-center py-20">
-              <div className="w-20 h-20 bg-gray-200 rounded-full flex items-center justify-center mx-auto mb-4">
-                <Search size={32} className="text-gray-400" />
-              </div>
-              <p className="text-gray-500">没有找到相关书籍</p>
-            </div>
-          )}
-        </main>
-
-        {/* Floating Action Button */}
-        <button 
-          onClick={() => openModal()}
-          className="fixed bottom-8 right-8 w-16 h-16 bg-green-600 text-white rounded-full shadow-2xl shadow-green-300 flex items-center justify-center hover:bg-green-700 hover:scale-110 active:scale-95 transition-all z-40"
-        >
-          <Plus size={32} />
-        </button>
-
-        {/* Delete Confirmation Modal */}
-        <AnimatePresence>
-          {deleteConfirmId && (
-            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setDeleteConfirmId(null)}
-                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-              />
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                className="relative bg-white p-6 rounded-3xl shadow-2xl max-w-sm w-full text-center"
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5">
+          <AnimatePresence mode="popLayout">
+            {filteredBooks.map((book) => (
+              <motion.div
+                key={book.id}
+                layout
+                initial={{opacity: 0, scale: 0.96}}
+                animate={{opacity: 1, scale: 1}}
+                exit={{opacity: 0, scale: 0.96}}
+                onClick={() => setActiveBookId((current) => (current === book.id ? null : book.id))}
+                className="group relative overflow-hidden rounded-3xl bg-white border border-gray-100 shadow-sm hover:shadow-xl transition-all cursor-pointer"
               >
-                <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Trash2 size={32} className="text-red-600" />
+                <div className="aspect-[3/4] bg-gray-100 relative overflow-hidden">
+                  {book.coverUrl ? (
+                    <img
+                      src={book.coverUrl}
+                      alt={book.title}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center p-5 text-center bg-[radial-gradient(circle_at_top,_#f8f0d7,_#ece8de_60%)]">
+                      <BookOpen size={42} className="text-emerald-700 mb-3" />
+                      <span className="text-sm font-semibold text-gray-600 line-clamp-3">{book.title}</span>
+                    </div>
+                  )}
+
+                  <div className="absolute top-3 left-3 flex flex-col gap-1.5">
+                    <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold text-white ${book.location === '成都' ? 'bg-sky-600' : 'bg-orange-500'}`}>
+                      {book.location}
+                    </span>
+                    <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold text-white ${book.status === '在家' ? 'bg-emerald-600' : 'bg-rose-500'}`}>
+                      {book.status}
+                    </span>
+                  </div>
+
+                  <div
+                    className={`absolute inset-0 bg-black/45 flex items-center justify-center gap-3 transition-opacity ${
+                      activeBookId === book.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                    }`}
+                  >
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openModal(book);
+                      }}
+                      className="p-3 rounded-full bg-white text-gray-700 hover:text-emerald-700 transition-colors shadow-lg"
+                    >
+                      <Edit2 size={18} />
+                    </button>
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setDeleteConfirmId(book.id);
+                      }}
+                      className="p-3 rounded-full bg-white text-gray-700 hover:text-red-600 transition-colors shadow-lg"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
                 </div>
-                <h3 className="text-xl font-bold text-gray-900 mb-2">确认删除？</h3>
-                <p className="text-gray-500 mb-6">此操作无法撤销，确定要从藏书中移除这本书吗？</p>
-                <div className="flex gap-3">
-                  <button 
-                    onClick={() => setDeleteConfirmId(null)}
-                    className="flex-1 py-3 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200 transition-all"
-                  >
-                    取消
-                  </button>
-                  <button 
-                    onClick={() => handleDelete(deleteConfirmId)}
-                    disabled={isDeleting}
-                    className="flex-1 py-3 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-all flex items-center justify-center gap-2"
-                  >
-                    {isDeleting ? <Loader2 className="animate-spin" size={20} /> : '确认删除'}
-                  </button>
+
+                <div className="p-4">
+                  <h3 className="font-bold text-gray-900 text-sm line-clamp-2 min-h-[2.5rem]">{book.title}</h3>
+                  <p className="text-sm text-gray-500 mt-1 line-clamp-1">{book.author || '未知作者'}</p>
+                  <p className="text-xs text-gray-400 mt-2 line-clamp-1">{book.publisher || '未填写出版社'}{book.year ? ` · ${book.year}` : ''}</p>
                 </div>
               </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+
+        {filteredBooks.length === 0 && !isBooksLoading && (
+          <div className="text-center py-20">
+            <div className="w-20 h-20 rounded-full bg-white border border-gray-200 flex items-center justify-center mx-auto mb-5 shadow-sm">
+              <Search size={32} className="text-gray-400" />
             </div>
-          )}
-        </AnimatePresence>
+            <h3 className="text-xl font-bold text-gray-900 mb-2">当前没有匹配的书籍</h3>
+            <p className="text-gray-500">试试切换地点、搜索关键词，或者直接添加一本新书。</p>
+          </div>
+        )}
+      </main>
 
-        {/* Modal */}
-        <AnimatePresence>
-          {isModalOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={closeModal}
-                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-              />
-              
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9, y: 20 }}
-                className="relative bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
-              >
-                <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
-                  <h2 className="text-xl font-bold text-gray-900">
-                    {editingBook ? '编辑书籍' : '添加新书'}
-                  </h2>
-                  <button onClick={closeModal} className="p-2 hover:bg-gray-200 rounded-full transition-colors">
-                    <X size={20} />
-                  </button>
+      <button
+        onClick={() => openModal()}
+        className="fixed right-6 bottom-6 w-16 h-16 rounded-full bg-emerald-700 text-white shadow-2xl shadow-emerald-200 flex items-center justify-center hover:bg-emerald-800 transition-all z-40"
+      >
+        <Plus size={30} />
+      </button>
+
+      <AnimatePresence>
+        {deleteConfirmId && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+            <motion.div
+              initial={{opacity: 0}}
+              animate={{opacity: 1}}
+              exit={{opacity: 0}}
+              onClick={() => setDeleteConfirmId(null)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{opacity: 0, scale: 0.94, y: 10}}
+              animate={{opacity: 1, scale: 1, y: 0}}
+              exit={{opacity: 0, scale: 0.94, y: 10}}
+              className="relative max-w-sm w-full rounded-3xl bg-white p-6 shadow-2xl text-center"
+            >
+              <div className="w-16 h-16 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-4">
+                <Trash2 size={30} className="text-red-600" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 mb-2">确认删除这本书？</h3>
+              <p className="text-gray-500 leading-7 mb-6">删除后不会自动恢复。如果只是暂时不在家，建议改成“不在家”而不是直接删除。</p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setDeleteConfirmId(null)}
+                  className="flex-1 py-3 rounded-2xl bg-gray-100 text-gray-700 font-bold hover:bg-gray-200 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={() => void handleDelete(deleteConfirmId)}
+                  disabled={isDeleting}
+                  className="flex-1 py-3 rounded-2xl bg-red-600 text-white font-bold hover:bg-red-700 transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2"
+                >
+                  {isDeleting ? <Loader2 className="animate-spin" size={18} /> : '确认删除'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isModalOpen && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
+            <motion.div
+              initial={{opacity: 0}}
+              animate={{opacity: 1}}
+              exit={{opacity: 0}}
+              onClick={() => void closeModal()}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+
+            <motion.div
+              initial={{opacity: 0, scale: 0.96, y: 12}}
+              animate={{opacity: 1, scale: 1, y: 0}}
+              exit={{opacity: 0, scale: 0.96, y: 12}}
+              className="relative w-full max-w-3xl max-h-[90vh] overflow-hidden rounded-3xl bg-white shadow-2xl flex flex-col"
+            >
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-[#fbfaf5]">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.25em] text-gray-400 mb-1">图书表单</p>
+                  <h2 className="text-2xl font-bold text-gray-900">{editingBook ? '编辑书籍' : '添加新书'}</h2>
                 </div>
+                <button onClick={() => void closeModal()} className="p-2 rounded-full hover:bg-gray-200 transition-colors">
+                  <X size={20} />
+                </button>
+              </div>
 
-                <div className="flex-1 overflow-y-auto p-6">
-                  <form id="book-form" onSubmit={handleSubmit} className="space-y-6">
-                    {/* ISBN & Scanner */}
-                    <div className="bg-green-50 p-4 rounded-2xl border border-green-100">
-                      <label className="block text-xs font-bold text-green-700 uppercase tracking-wider mb-2">ISBN 扫码录入</label>
-                      <div className="flex gap-2">
-                        <div className="relative flex-1">
-                          <input 
-                            type="text" 
-                            placeholder="输入 ISBN 号..."
-                            value={formData.isbn}
-                            onChange={(e) => setFormData({...formData, isbn: e.target.value})}
-                            className="w-full pl-4 pr-12 py-3 bg-white border border-green-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500 transition-all"
-                          />
-                          <button 
-                            type="button"
-                            onClick={() => fetchBookInfo(formData.isbn)}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                          >
-                            <Search size={20} />
-                          </button>
-                        </div>
-                        <button 
+              <div className="flex-1 overflow-y-auto px-6 py-6">
+                <form id="book-form" className="space-y-6" onSubmit={handleSubmit}>
+                  <section className="rounded-3xl bg-emerald-50 border border-emerald-100 p-4">
+                    <div className="flex items-center justify-between gap-4 mb-3">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.25em] text-emerald-600 mb-1">ISBN 自动录入</p>
+                        <p className="text-sm text-gray-600">扫描或输入 ISBN 后，尝试自动补全标题、作者、出版社和年份。</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={startScanner}
+                        className="shrink-0 px-4 py-3 rounded-2xl bg-emerald-700 text-white font-bold inline-flex items-center gap-2 hover:bg-emerald-800 transition-colors"
+                      >
+                        <ScanLine size={18} />
+                        扫码
+                      </button>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          value={formData.isbn}
+                          onChange={(event) => setFormData({...formData, isbn: event.target.value})}
+                          placeholder="输入 ISBN 号"
+                          className="w-full rounded-2xl border border-emerald-200 bg-white px-4 py-3 pr-11 outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                        <button
                           type="button"
-                          onClick={startScanner}
-                          className="px-4 bg-green-600 text-white rounded-xl hover:bg-green-700 transition-colors flex items-center gap-2"
+                          onClick={() => void fetchBookInfo(formData.isbn)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-xl text-emerald-700 hover:bg-emerald-50 transition-colors"
                         >
-                          <ScanLine size={20} />
-                          <span className="hidden sm:inline">扫码</span>
+                          <Search size={18} />
                         </button>
                       </div>
-                      
-                      {isScanning && (
-                        <div className="mt-4 rounded-xl overflow-hidden bg-black aspect-video relative">
-                          <div id="reader"></div>
-                          <button 
-                            onClick={() => setIsScanning(false)}
-                            className="absolute top-2 right-2 p-2 bg-white/20 hover:bg-white/40 text-white rounded-full backdrop-blur-md"
+                    </div>
+
+                    {isScanning && (
+                      <div className="mt-4 rounded-2xl overflow-hidden bg-black relative">
+                        <div id="reader" />
+                        <button
+                          type="button"
+                          onClick={() => void stopScanner()}
+                          className="absolute top-3 right-3 p-2 rounded-full bg-white/20 text-white hover:bg-white/35 transition-colors"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">书名 *</label>
+                        <input
+                          required
+                          type="text"
+                          value={formData.title}
+                          onChange={(event) => setFormData({...formData, title: event.target.value})}
+                          className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">作者</label>
+                        <input
+                          type="text"
+                          value={formData.author}
+                          onChange={(event) => setFormData({...formData, author: event.target.value})}
+                          className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">出版社</label>
+                        <input
+                          type="text"
+                          value={formData.publisher}
+                          onChange={(event) => setFormData({...formData, publisher: event.target.value})}
+                          className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">封面图片 URL</label>
+                        <input
+                          type="text"
+                          value={formData.coverUrl}
+                          onChange={(event) => setFormData({...formData, coverUrl: event.target.value})}
+                          className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">出版年份</label>
+                        <input
+                          type="text"
+                          value={formData.year}
+                          onChange={(event) => setFormData({...formData, year: event.target.value})}
+                          className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">ISBN</label>
+                        <input
+                          type="text"
+                          value={formData.isbn}
+                          onChange={(event) => setFormData({...formData, isbn: event.target.value})}
+                          className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">所在地</label>
+                          <select
+                            value={formData.location}
+                            onChange={(event) => setFormData({...formData, location: event.target.value as BookDraft['location']})}
+                            className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
                           >
-                            <X size={16} />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 ml-1">书名 *</label>
-                          <input 
-                            required
-                            type="text" 
-                            value={formData.title}
-                            onChange={(e) => setFormData({...formData, title: e.target.value})}
-                            className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-green-500 transition-all"
-                          />
+                            <option value="成都">成都</option>
+                            <option value="重庆">重庆</option>
+                          </select>
                         </div>
                         <div>
-                          <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 ml-1">作者</label>
-                          <input 
-                            type="text" 
-                            value={formData.author}
-                            onChange={(e) => setFormData({...formData, author: e.target.value})}
-                            className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-green-500 transition-all"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 ml-1">出版社</label>
-                          <input 
-                            type="text" 
-                            value={formData.publisher}
-                            onChange={(e) => setFormData({...formData, publisher: e.target.value})}
-                            className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-green-500 transition-all"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 ml-1">出版年份</label>
-                          <input 
-                            type="text" 
-                            value={formData.year}
-                            onChange={(e) => setFormData({...formData, year: e.target.value})}
-                            className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-green-500 transition-all"
-                          />
-                        </div>
-                        
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 ml-1">所在地</label>
-                            <select 
-                              value={formData.location}
-                              onChange={(e) => setFormData({...formData, location: e.target.value as any})}
-                              className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-green-500 transition-all appearance-none"
-                            >
-                              <option value="成都">成都</option>
-                              <option value="重庆">重庆</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 ml-1">状态</label>
-                            <select 
-                              value={formData.status}
-                              onChange={(e) => setFormData({...formData, status: e.target.value as any})}
-                              className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-green-500 transition-all appearance-none"
-                            >
-                              <option value="在家">在家</option>
-                              <option value="不在家">不在家</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1.5 ml-1">封面图片 URL</label>
-                          <input 
-                            type="text" 
-                            value={formData.coverUrl}
-                            onChange={(e) => setFormData({...formData, coverUrl: e.target.value})}
-                            className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:bg-white focus:ring-2 focus:ring-green-500 transition-all"
-                          />
+                          <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">状态</label>
+                          <select
+                            value={formData.status}
+                            onChange={(event) => setFormData({...formData, status: event.target.value as BookDraft['status']})}
+                            className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
+                          >
+                            <option value="在家">在家</option>
+                            <option value="不在家">不在家</option>
+                          </select>
                         </div>
                       </div>
                     </div>
-                  </form>
-                </div>
+                  </section>
+                </form>
+              </div>
 
-                <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex gap-3">
-                  <button 
-                    type="button"
-                    onClick={closeModal}
-                    className="flex-1 py-3 bg-white border border-gray-200 text-gray-700 rounded-xl font-bold hover:bg-gray-50 transition-all active:scale-95"
-                  >
-                    取消
-                  </button>
-                  <button 
-                    type="submit"
-                    form="book-form"
-                    className="flex-[2] py-3 bg-green-600 text-white rounded-xl font-bold shadow-lg shadow-green-100 hover:bg-green-700 transition-all active:scale-95"
-                  >
-                    {editingBook ? '保存修改' : '确认添加'}
-                  </button>
-                </div>
-              </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
-      </div>
-    </ErrorBoundary>
+              <div className="border-t border-gray-100 bg-[#fbfaf5] px-6 py-4 flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => void closeModal()}
+                  className="flex-1 py-3 rounded-2xl bg-white border border-gray-200 text-gray-700 font-bold hover:bg-gray-50 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  form="book-form"
+                  disabled={isSaving}
+                  className="flex-[1.4] py-3 rounded-2xl bg-emerald-700 text-white font-bold hover:bg-emerald-800 transition-colors disabled:opacity-60 inline-flex items-center justify-center gap-2"
+                >
+                  {isSaving ? <Loader2 className="animate-spin" size={18} /> : editingBook ? '保存修改' : '确认添加'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }

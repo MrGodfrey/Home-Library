@@ -1,20 +1,29 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Georgia", serif;
+  --font-sans: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
+  --font-serif: "Songti SC", "Noto Serif CJK SC", serif;
   
   --color-douban-green: #007722;
   --color-douban-bg: #f6f6f1;
 }
 
 @layer base {
+  html {
+    color-scheme: light;
+  }
+
   body {
     @apply bg-douban-bg text-gray-900 font-sans;
+    min-height: 100vh;
   }
   
   h1, h2, h3 {
     @apply font-serif;
+  }
+
+  #root {
+    min-height: 100vh;
   }
 }
 
@@ -47,4 +56,8 @@
 
 #reader__dashboard_section_csr button {
   @apply px-4 py-2 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition-all text-sm;
+}
+
+.safe-bottom {
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
 }
