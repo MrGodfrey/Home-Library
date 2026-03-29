@@ -50,7 +50,6 @@ const emptyForm: BookDraft = {
   year: '',
   isbn: '',
   location: '成都',
-  status: '在家',
   coverUrl: '',
   coverObjectKey: '',
 };
@@ -416,7 +415,6 @@ export default function App() {
         year: book.year,
         isbn: book.isbn,
         location: book.location,
-        status: book.status,
         coverUrl: book.coverUrl,
         coverObjectKey: book.coverObjectKey,
       });
@@ -788,15 +786,6 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className="absolute top-3 left-3 flex flex-col gap-1.5">
-                    <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold text-white ${book.location === '成都' ? 'bg-sky-600' : 'bg-orange-500'}`}>
-                      {book.location}
-                    </span>
-                    <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold text-white ${book.status === '在家' ? 'bg-emerald-600' : 'bg-rose-500'}`}>
-                      {book.status}
-                    </span>
-                  </div>
-
                   <div
                     className={`absolute inset-0 bg-black/45 flex items-center justify-center gap-3 transition-opacity ${
                       activeBookId === book.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
@@ -825,7 +814,12 @@ export default function App() {
 
                 <div className="p-4">
                   <h3 className="font-bold text-gray-900 text-sm line-clamp-2 min-h-[2.5rem]">{book.title}</h3>
-                  <p className="text-sm text-gray-500 mt-1 line-clamp-1">{book.author || '未知作者'}</p>
+                  <div className="mt-2">
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold text-white ${book.location === '成都' ? 'bg-sky-600' : 'bg-orange-500'}`}>
+                      {book.location}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-500 mt-2 line-clamp-1">{book.author || '未知作者'}</p>
                   <p className="text-xs text-gray-400 mt-2 line-clamp-1">{book.publisher || '未填写出版社'}{book.year ? ` · ${book.year}` : ''}</p>
                 </div>
               </motion.div>
@@ -872,7 +866,7 @@ export default function App() {
                 <Trash2 size={30} className="text-red-600" />
               </div>
               <h3 className="text-xl font-bold text-gray-900 mb-2">确认删除这本书？</h3>
-              <p className="text-gray-500 leading-7 mb-6">删除后不会自动恢复。如果只是暂时不在家，建议改成“不在家”而不是直接删除。</p>
+              <p className="text-gray-500 leading-7 mb-6">删除后不会自动恢复，请确认这本书已经不需要保留在书库中。</p>
               <div className="flex gap-3">
                 <button
                   onClick={() => setDeleteConfirmId(null)}
@@ -1111,29 +1105,16 @@ export default function App() {
                           className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
                         />
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">所在地</label>
-                          <select
-                            value={formData.location}
-                            onChange={(event) => setFormData({...formData, location: event.target.value as BookDraft['location']})}
-                            className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
-                          >
-                            <option value="成都">成都</option>
-                            <option value="重庆">重庆</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">状态</label>
-                          <select
-                            value={formData.status}
-                            onChange={(event) => setFormData({...formData, status: event.target.value as BookDraft['status']})}
-                            className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
-                          >
-                            <option value="在家">在家</option>
-                            <option value="不在家">不在家</option>
-                          </select>
-                        </div>
+                      <div>
+                        <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">所在地</label>
+                        <select
+                          value={formData.location}
+                          onChange={(event) => setFormData({...formData, location: event.target.value as BookDraft['location']})}
+                          className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
+                        >
+                          <option value="成都">成都</option>
+                          <option value="重庆">重庆</option>
+                        </select>
                       </div>
                     </div>
                   </section>

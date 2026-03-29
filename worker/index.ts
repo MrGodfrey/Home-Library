@@ -7,7 +7,6 @@ interface BookPayload {
   year?: unknown;
   isbn?: unknown;
   location?: unknown;
-  status?: unknown;
   coverUrl?: unknown;
   coverObjectKey?: unknown;
 }
@@ -117,10 +116,6 @@ function normalizePayload(payload: BookPayload) {
     throw new Error('所在地必须是成都或重庆。');
   }
 
-  if (payload.status !== '在家' && payload.status !== '不在家') {
-    throw new Error('状态必须是“在家”或“不在家”。');
-  }
-
   return {
     title: payload.title.trim(),
     author: typeof payload.author === 'string' ? payload.author.trim() : '',
@@ -128,7 +123,6 @@ function normalizePayload(payload: BookPayload) {
     year: typeof payload.year === 'string' ? payload.year.trim() : '',
     isbn: typeof payload.isbn === 'string' ? payload.isbn.trim() : '',
     location: payload.location,
-    status: payload.status,
     coverUrl: typeof payload.coverUrl === 'string' ? payload.coverUrl.trim() : '',
     coverObjectKey: typeof payload.coverObjectKey === 'string' ? payload.coverObjectKey.trim() : '',
   };
@@ -278,7 +272,6 @@ async function handleListBooks(request: Request, env: WorkerEnv) {
         year,
         isbn,
         location,
-        status,
         cover_url AS coverUrl,
         cover_object_key AS coverObjectKey,
         owner_email AS ownerEmail,
@@ -319,7 +312,7 @@ async function handleCreateBook(request: Request, env: WorkerEnv) {
         cover_url,
         cover_object_key,
         owner_email
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, '在家', ?, ?, ?)
       `,
     )
     .bind(
@@ -330,7 +323,6 @@ async function handleCreateBook(request: Request, env: WorkerEnv) {
       payload.year,
       payload.isbn,
       payload.location,
-      payload.status,
       payload.coverUrl,
       payload.coverObjectKey,
       auth.email,
@@ -348,7 +340,6 @@ async function handleCreateBook(request: Request, env: WorkerEnv) {
         year,
         isbn,
         location,
-        status,
         cover_url AS coverUrl,
         cover_object_key AS coverObjectKey,
         owner_email AS ownerEmail,
@@ -385,7 +376,7 @@ async function handleUpdateBook(request: Request, env: WorkerEnv, id: string) {
         year = ?,
         isbn = ?,
         location = ?,
-        status = ?,
+        status = '在家',
         cover_url = ?,
         cover_object_key = ?,
         updated_at = CURRENT_TIMESTAMP
@@ -399,7 +390,6 @@ async function handleUpdateBook(request: Request, env: WorkerEnv, id: string) {
       payload.year,
       payload.isbn,
       payload.location,
-      payload.status,
       payload.coverUrl,
       payload.coverObjectKey,
       id,
@@ -417,7 +407,6 @@ async function handleUpdateBook(request: Request, env: WorkerEnv, id: string) {
         year,
         isbn,
         location,
-        status,
         cover_url AS coverUrl,
         cover_object_key AS coverObjectKey,
         owner_email AS ownerEmail,

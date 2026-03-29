@@ -1,5 +1,4 @@
 export type BookLocation = '成都' | '重庆';
-export type BookStatus = '在家' | '不在家';
 
 export interface BookDraft {
   title: string;
@@ -8,7 +7,6 @@ export interface BookDraft {
   year: string;
   isbn: string;
   location: BookLocation;
-  status: BookStatus;
   coverUrl: string;
   coverObjectKey: string;
 }
@@ -53,7 +51,6 @@ function normalizeDraft(input: BookDraft): BookDraft {
     year: input.year.trim(),
     isbn: input.isbn.trim(),
     location: input.location,
-    status: input.status,
     coverUrl: input.coverUrl.trim(),
     coverObjectKey: input.coverObjectKey.trim(),
   };
@@ -70,7 +67,6 @@ function normalizeStoredBook(input: Partial<Book>): Book {
     year: typeof input.year === 'string' ? input.year : '',
     isbn: typeof input.isbn === 'string' ? input.isbn : '',
     location: input.location === '重庆' ? '重庆' : '成都',
-    status: input.status === '不在家' ? '不在家' : '在家',
     coverUrl: typeof input.coverUrl === 'string' ? input.coverUrl : '',
     coverObjectKey: typeof input.coverObjectKey === 'string' ? input.coverObjectKey : '',
     ownerEmail: typeof input.ownerEmail === 'string' ? input.ownerEmail : undefined,
