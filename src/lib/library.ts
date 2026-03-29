@@ -10,6 +10,7 @@ export interface BookDraft {
   location: BookLocation;
   status: BookStatus;
   coverUrl: string;
+  coverObjectKey: string;
 }
 
 export interface Book extends BookDraft {
@@ -54,6 +55,27 @@ function normalizeDraft(input: BookDraft): BookDraft {
     location: input.location,
     status: input.status,
     coverUrl: input.coverUrl.trim(),
+    coverObjectKey: input.coverObjectKey.trim(),
+  };
+}
+
+function normalizeStoredBook(input: Partial<Book>): Book {
+  const now = new Date().toISOString();
+
+  return {
+    id: typeof input.id === 'string' ? input.id : crypto.randomUUID(),
+    title: typeof input.title === 'string' ? input.title : '',
+    author: typeof input.author === 'string' ? input.author : '',
+    publisher: typeof input.publisher === 'string' ? input.publisher : '',
+    year: typeof input.year === 'string' ? input.year : '',
+    isbn: typeof input.isbn === 'string' ? input.isbn : '',
+    location: input.location === '重庆' ? '重庆' : '成都',
+    status: input.status === '不在家' ? '不在家' : '在家',
+    coverUrl: typeof input.coverUrl === 'string' ? input.coverUrl : '',
+    coverObjectKey: typeof input.coverObjectKey === 'string' ? input.coverObjectKey : '',
+    ownerEmail: typeof input.ownerEmail === 'string' ? input.ownerEmail : undefined,
+    createdAt: typeof input.createdAt === 'string' ? input.createdAt : now,
+    updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : now,
   };
 }
 
@@ -77,8 +99,8 @@ function readLocalBooks() {
   }
 
   try {
-    const parsed = JSON.parse(raw) as Book[];
-    return sortBooks(parsed);
+    const parsed = JSON.parse(raw) as Partial<Book>[];
+    return sortBooks(parsed.map((book) => normalizeStoredBook(book)));
   } catch {
     return [] as Book[];
   }
@@ -98,12 +120,15 @@ async function parseError(response: Response) {
 }
 
 async function requestJson<T>(path: string, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+
+  if (!(init?.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   const response = await fetch(path, {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
+    headers,
   });
 
   if (!response.ok) {
@@ -169,6 +194,40 @@ export async function listBooks() {
   });
 
   return sortBooks(data.books);
+}
+
+export function getCoverImageUrl(coverObjectKey: string, coverUrl = '') {
+  if (coverObjectKey) {
+    return `/api/covers/${encodeURIComponent(coverObjectKey)}`;
+  }
+
+  return coverUrl;
+}
+
+export async function uploadCover(file: File) {
+  if (resolveDataMode() === 'local') {
+    throw new Error('本地 localStorage 模式不支持上传封面，请切换到 API 模式并启动 Worker。');
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const data = await requestJson<{coverObjectKey: string}>('/api/covers', {
+    method: 'POST',
+    body: formData,
+  });
+
+  return data;
+}
+
+export async function deleteUploadedCover(coverObjectKey: string) {
+  if (!coverObjectKey || resolveDataMode() === 'local') {
+    return;
+  }
+
+  await requestJson<{success: true}>(`/api/covers/${encodeURIComponent(coverObjectKey)}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function createBook(input: BookDraft) {

@@ -14,9 +14,10 @@
 - 查看全部藏书，或按成都 / 重庆筛选。
 - 按书名、作者、ISBN 搜索。
 - 手动新增、编辑、删除书籍。
+- 上传书籍封面图片，并存入 Cloudflare R2。
 - 使用摄像头扫描 ISBN，并尝试通过 Google Books / Open Library 自动补齐信息。
 - 本地开发模式可直接测试完整前端交互。
-- 生产架构已预留 Cloudflare API 路由与 D1 表结构。
+- 生产架构已接好 Cloudflare API、D1 和 R2 封面存储。
 
 ## 本地运行
 
@@ -58,6 +59,7 @@ npm run dev
 - 图书数据存放在当前浏览器的 localStorage 中。
 - 清空浏览器站点数据后，书库会被清空。
 - ISBN 自动补全仍然会访问外部公开 API，所以这一项依赖网络。
+- 封面上传不会写入 localStorage；如需测试上传到 R2，请改用 API 模式并启动 Worker。
 
 ## Cloudflare 生产技术栈
 
@@ -66,10 +68,11 @@ npm run dev
 - Cloudflare Workers：承载 `/api/session`、`/api/books` 等接口。
 - Cloudflare Workers Static Assets：托管前端静态资源与 SPA 路由回退。
 - Cloudflare D1：存储书籍数据。
+- Cloudflare R2：存储用户上传的书籍封面图片。
 - Cloudflare Zero Trust Access：保护整个站点，只允许两位固定用户访问。
 - Cloudflare DNS：接入你现有的独立域名。
 
-本期不强制使用 R2，因为当前封面图片仍然可以直接保存外部 URL。后续如果想自己托管封面，再引入 R2 即可。
+当前实现会优先显示 R2 中的封面图片。历史外链封面仍可兼容显示，但前端已经不再提供录入外链 URL 的入口。
 
 ## 为什么登录直接交给 Zero Trust
 
@@ -114,7 +117,7 @@ npm run dev
 
 - `DB`
 
-本仓库已经提供了初始表结构，见 [migrations/0001_init.sql](migrations/0001_init.sql)。
+本仓库已经提供了数据库迁移脚本，见 [migrations/0001_init.sql](migrations/0001_init.sql) 和 [migrations/0002_add_cover_object_key.sql](migrations/0002_add_cover_object_key.sql)。
 
 初始化数据库示例：
 
@@ -122,7 +125,24 @@ npm run dev
 npx wrangler d1 migrations apply home-library --remote
 ```
 
-### 4. 配置 Worker 环境变量
+### 4. 创建 R2 存储桶
+
+在 Cloudflare Dashboard 中创建一个 R2 bucket，例如：
+
+- Bucket name: `home-library-covers`
+
+然后把 [wrangler.jsonc](wrangler.jsonc) 里的以下字段替换成你自己的桶名：
+
+- `r2_buckets[0].bucket_name`
+- `r2_buckets[0].preview_bucket_name`
+
+绑定名请保持为：
+
+- `BOOK_COVERS`
+
+当前实现通过 Worker 的 `/api/covers/*` 路由回读图片，所以 R2 bucket 不需要额外配置公网公开访问。
+
+### 5. 配置 Worker 环境变量
 
 在 Cloudflare Worker 的 Variables / Secrets 中添加：
 
@@ -133,7 +153,7 @@ npx wrangler d1 migrations apply home-library --remote
 
 如果你使用 Wrangler CLI，也可以用 `wrangler secret put` 写入敏感值。
 
-### 5. 配置 Zero Trust Access
+### 6. 配置 Zero Trust Access
 
 在 Cloudflare Zero Trust 里创建一个 Self-hosted Web Application：
 
@@ -152,7 +172,7 @@ npx wrangler d1 migrations apply home-library --remote
 
 不推荐本项目使用 Google OAuth 作为唯一入口，因为你的使用环境包含中国大陆，邮箱 OTP 的可用性通常更稳妥。
 
-### 6. 部署 Worker
+### 7. 部署 Worker
 
 仓库已经在 [wrangler.jsonc](wrangler.jsonc) 中配置了构建命令，所以可以直接部署：
 
@@ -166,7 +186,7 @@ npm run deploy
 npx wrangler deploy
 ```
 
-### 7. 将自定义域名绑定到 Worker
+### 8. 将自定义域名绑定到 Worker
 
 此处可以在 Worker 的 Settings 中添加自定义域名，然后它会自动将这个域名绑定到这个 DNS 记录中。
 
@@ -197,8 +217,8 @@ npx wrangler deploy
 ### API 模式
 
 - 由 `VITE_DATA_MODE=api` 控制。
-- 前端调用 `/api/session` 与 `/api/books`。
-- 适合接 Cloudflare Worker 和 D1。
+- 前端调用 `/api/session`、`/api/books` 与 `/api/covers`。
+- 适合接 Cloudflare Worker、D1 和 R2。
 
 如果你本地已经跑起了 Cloudflare Worker 开发服务，还可以设置：
 
@@ -215,13 +235,15 @@ VITE_DATA_MODE="api"
 npm run worker:dev
 ```
 
+如果你要验证封面上传，请确保本地 Worker 也已经拿到了 `BOOK_COVERS` 绑定，否则 `/api/covers` 会返回配置错误。
+
 ## 项目结构
 
 - [src/App.tsx](src/App.tsx)：主界面与交互。
 - [src/lib/library.ts](src/lib/library.ts)：本地存储 / API 双模式数据层。
 - [worker/index.ts](worker/index.ts)：Cloudflare Worker API 入口。
 - [wrangler.jsonc](wrangler.jsonc)：Worker 构建、静态资源和 D1 绑定配置。
-- [migrations/0001_init.sql](migrations/0001_init.sql)：D1 初始建表脚本。
+- [migrations/](migrations/)：D1 数据库迁移脚本。
 - [public/manifest.webmanifest](public/manifest.webmanifest)：PWA manifest。
 - [public/sw.js](public/sw.js)：最小化 service worker。
 
@@ -242,7 +264,6 @@ npm run worker:dev
 - 不提供公开注册。
 - 不在站内维护用户名密码体系。
 - 不做完整离线写入同步。
-- 不在本期把封面图片迁移到 R2。
 
 ## 验证清单
 
@@ -251,5 +272,6 @@ npm run worker:dev
 1. 站点未通过 Access 时无法进入。
 2. 两个白名单邮箱都能正常登录。
 3. 可以查看、搜索、添加、编辑、删除书籍。
-4. ISBN 扫码录入在 iPhone Safari 中可正常拉起摄像头。
-5. 添加到主屏幕后能以 standalone 方式打开。
+4. 可以上传、替换、删除封面，并确认图片实际写入 R2。
+5. ISBN 扫码录入在 iPhone Safari 中可正常拉起摄像头。
+6. 添加到主屏幕后能以 standalone 方式打开。

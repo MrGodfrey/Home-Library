@@ -9,6 +9,7 @@ interface BookPayload {
   location?: unknown;
   status?: unknown;
   coverUrl?: unknown;
+  coverObjectKey?: unknown;
 }
 
 interface AuthResult {
@@ -33,13 +34,47 @@ interface DatabaseBinding {
   prepare: (sql: string) => DbStatement;
 }
 
+interface R2HttpMetadata {
+  contentType?: string;
+}
+
+interface R2ObjectBody {
+  body: ReadableStream | null;
+  httpEtag?: string;
+  httpMetadata?: R2HttpMetadata;
+  writeHttpMetadata?: (headers: Headers) => void;
+}
+
+interface R2BucketBinding {
+  get: (key: string) => Promise<R2ObjectBody | null>;
+  put: (
+    key: string,
+    value: ArrayBuffer | ArrayBufferView | Blob | ReadableStream | string,
+    options?: {
+      httpMetadata?: R2HttpMetadata;
+      customMetadata?: Record<string, string>;
+    },
+  ) => Promise<unknown>;
+  delete: (key: string) => Promise<void>;
+}
+
 interface WorkerEnv {
   DB?: DatabaseBinding;
+  BOOK_COVERS?: R2BucketBinding;
   ALLOW_DEV_AUTH?: string;
   DEV_ACCESS_EMAIL?: string;
   TEAM_DOMAIN?: string;
   POLICY_AUD?: string;
 }
+
+const MAX_COVER_SIZE_BYTES = 10 * 1024 * 1024;
+const COVER_EXTENSION_BY_TYPE: Record<string, string> = {
+  'image/avif': 'avif',
+  'image/gif': 'gif',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+};
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -95,7 +130,55 @@ function normalizePayload(payload: BookPayload) {
     location: payload.location,
     status: payload.status,
     coverUrl: typeof payload.coverUrl === 'string' ? payload.coverUrl.trim() : '',
+    coverObjectKey: typeof payload.coverObjectKey === 'string' ? payload.coverObjectKey.trim() : '',
   };
+}
+
+function decodeCoverObjectKey(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new Error('封面对象键无效。');
+  }
+}
+
+function getCoverExtension(file: File) {
+  const byType = COVER_EXTENSION_BY_TYPE[file.type];
+
+  if (byType) {
+    return byType;
+  }
+
+  const match = file.name.toLowerCase().match(/\.([a-z0-9]+)$/);
+  const fromName = match?.[1];
+
+  if (fromName && Object.values(COVER_EXTENSION_BY_TYPE).includes(fromName)) {
+    return fromName;
+  }
+
+  throw new Error('仅支持 JPG、PNG、WEBP、GIF 或 AVIF 格式的封面图片。');
+}
+
+function buildCoverObjectKey(file: File) {
+  const day = new Date().toISOString().slice(0, 10);
+  const extension = getCoverExtension(file);
+  return `covers/${day}/${crypto.randomUUID()}.${extension}`;
+}
+
+async function requireCoverBucket(env: WorkerEnv) {
+  if (!env.BOOK_COVERS) {
+    throw new Error('未找到 R2 绑定，请在 Cloudflare Worker 中绑定名为 BOOK_COVERS 的 R2 存储桶。');
+  }
+
+  return env.BOOK_COVERS;
+}
+
+async function deleteCoverObject(env: WorkerEnv, coverObjectKey: string) {
+  if (!coverObjectKey || !env.BOOK_COVERS) {
+    return;
+  }
+
+  await env.BOOK_COVERS.delete(coverObjectKey);
 }
 
 async function getIdentity(request: Request, env: WorkerEnv): Promise<AuthResult> {
@@ -197,6 +280,7 @@ async function handleListBooks(request: Request, env: WorkerEnv) {
         location,
         status,
         cover_url AS coverUrl,
+        cover_object_key AS coverObjectKey,
         owner_email AS ownerEmail,
         created_at AS createdAt,
         updated_at AS updatedAt
@@ -233,8 +317,9 @@ async function handleCreateBook(request: Request, env: WorkerEnv) {
         location,
         status,
         cover_url,
+        cover_object_key,
         owner_email
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
     )
     .bind(
@@ -247,6 +332,7 @@ async function handleCreateBook(request: Request, env: WorkerEnv) {
       payload.location,
       payload.status,
       payload.coverUrl,
+      payload.coverObjectKey,
       auth.email,
     )
     .run();
@@ -264,6 +350,7 @@ async function handleCreateBook(request: Request, env: WorkerEnv) {
         location,
         status,
         cover_url AS coverUrl,
+        cover_object_key AS coverObjectKey,
         owner_email AS ownerEmail,
         created_at AS createdAt,
         updated_at AS updatedAt
@@ -300,6 +387,7 @@ async function handleUpdateBook(request: Request, env: WorkerEnv, id: string) {
         location = ?,
         status = ?,
         cover_url = ?,
+        cover_object_key = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
       `,
@@ -313,6 +401,7 @@ async function handleUpdateBook(request: Request, env: WorkerEnv, id: string) {
       payload.location,
       payload.status,
       payload.coverUrl,
+      payload.coverObjectKey,
       id,
     )
     .run();
@@ -330,6 +419,7 @@ async function handleUpdateBook(request: Request, env: WorkerEnv, id: string) {
         location,
         status,
         cover_url AS coverUrl,
+        cover_object_key AS coverObjectKey,
         owner_email AS ownerEmail,
         created_at AS createdAt,
         updated_at AS updatedAt
@@ -347,6 +437,86 @@ async function handleUpdateBook(request: Request, env: WorkerEnv, id: string) {
   return json({book});
 }
 
+async function handleUploadCover(request: Request, env: WorkerEnv) {
+  const auth = await getIdentity(request, env);
+
+  if (!auth.authenticated) {
+    return json({error: auth.message || '未认证。'}, 401);
+  }
+
+  const bucket = await requireCoverBucket(env);
+  const formData = await request.formData();
+  const entry = formData.get('file');
+
+  if (!(entry instanceof File)) {
+    throw new Error('请先选择一张封面图片。');
+  }
+
+  if (entry.size === 0) {
+    throw new Error('封面图片不能为空。');
+  }
+
+  if (entry.size > MAX_COVER_SIZE_BYTES) {
+    throw new Error('封面图片不能超过 10MB。');
+  }
+
+  const coverObjectKey = buildCoverObjectKey(entry);
+  const customMetadata: Record<string, string> = {};
+
+  if (auth.email) {
+    customMetadata.uploadedBy = auth.email;
+  }
+
+  if (entry.name) {
+    customMetadata.originalFilename = entry.name.slice(0, 200);
+  }
+
+  await bucket.put(coverObjectKey, await entry.arrayBuffer(), {
+    httpMetadata: {
+      contentType: entry.type || undefined,
+    },
+    customMetadata,
+  });
+
+  return json({coverObjectKey}, 201);
+}
+
+async function handleGetCover(env: WorkerEnv, coverObjectKey: string) {
+  const bucket = await requireCoverBucket(env);
+  const object = await bucket.get(coverObjectKey);
+
+  if (!object) {
+    return new Response('Not Found', {status: 404});
+  }
+
+  const headers = new Headers({
+    'Cache-Control': 'public, max-age=31536000, immutable',
+  });
+
+  object.writeHttpMetadata?.(headers);
+
+  if (!headers.has('Content-Type') && object.httpMetadata?.contentType) {
+    headers.set('Content-Type', object.httpMetadata.contentType);
+  }
+
+  if (object.httpEtag) {
+    headers.set('ETag', object.httpEtag);
+  }
+
+  return new Response(object.body, {headers});
+}
+
+async function handleDeleteCover(request: Request, env: WorkerEnv, coverObjectKey: string) {
+  const auth = await getIdentity(request, env);
+
+  if (!auth.authenticated) {
+    return json({error: auth.message || '未认证。'}, 401);
+  }
+
+  await deleteCoverObject(env, coverObjectKey);
+  return json({success: true});
+}
+
 async function handleDeleteBook(request: Request, env: WorkerEnv, id: string) {
   const auth = await getIdentity(request, env);
 
@@ -355,6 +525,16 @@ async function handleDeleteBook(request: Request, env: WorkerEnv, id: string) {
   }
 
   const db = await requireDb(env);
+  const existingBook = await db
+    .prepare(
+      `
+      SELECT cover_object_key AS coverObjectKey
+      FROM books
+      WHERE id = ?
+      `,
+    )
+    .bind(id)
+    .first<{coverObjectKey?: string}>();
 
   await db
     .prepare(
@@ -365,6 +545,8 @@ async function handleDeleteBook(request: Request, env: WorkerEnv, id: string) {
     )
     .bind(id)
     .run();
+
+  await deleteCoverObject(env, existingBook?.coverObjectKey || '');
 
   return json({success: true});
 }
@@ -386,6 +568,18 @@ export default {
 
       if (segments.length === 1 && segments[0] === 'books' && request.method === 'POST') {
         return await handleCreateBook(request, env);
+      }
+
+      if (segments.length === 1 && segments[0] === 'covers' && request.method === 'POST') {
+        return await handleUploadCover(request, env);
+      }
+
+      if (segments.length >= 2 && segments[0] === 'covers' && request.method === 'GET') {
+        return await handleGetCover(env, decodeCoverObjectKey(segments.slice(1).join('/')));
+      }
+
+      if (segments.length >= 2 && segments[0] === 'covers' && request.method === 'DELETE') {
+        return await handleDeleteCover(request, env, decodeCoverObjectKey(segments.slice(1).join('/')));
       }
 
       if (segments.length === 2 && segments[0] === 'books' && request.method === 'PUT') {

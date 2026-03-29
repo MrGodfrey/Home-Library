@@ -1,7 +1,8 @@
-import {useEffect, useRef, useState, type FormEvent} from 'react';
+import {useEffect, useRef, useState, type ChangeEvent, type FormEvent} from 'react';
 import {
   AlertCircle,
   BookOpen,
+  Image,
   Loader2,
   LogOut,
   Plus,
@@ -11,17 +12,21 @@ import {
   ShieldCheck,
   Trash2,
   Edit2,
+  Upload,
   X,
 } from 'lucide-react';
 import {AnimatePresence, motion} from 'motion/react';
 import {Toaster, toast} from 'sonner';
 import {
   createBook,
+  deleteUploadedCover,
   getRuntimeLabel,
+  getCoverImageUrl,
   getSession,
   listBooks,
   logout,
   removeBook,
+  uploadCover,
   updateBook,
   type Book,
   type BookDraft,
@@ -47,6 +52,7 @@ const emptyForm: BookDraft = {
   location: '成都',
   status: '在家',
   coverUrl: '',
+  coverObjectKey: '',
 };
 
 function BootScreen({label}: {label: string}) {
@@ -94,6 +100,7 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [isUploadingCover, setIsUploadingCover] = useState(false);
   const [cameraOptions, setCameraOptions] = useState<CameraOption[]>([]);
   const [activeCameraId, setActiveCameraId] = useState<string>('');
   const [isScannerStarting, setIsScannerStarting] = useState(false);
@@ -103,6 +110,11 @@ export default function App() {
   const [formData, setFormData] = useState<BookDraft>(emptyForm);
   const scannerRef = useRef<ScannerInstance | null>(null);
   const scannerStartTokenRef = useRef(0);
+  const initialCoverRef = useRef({coverObjectKey: '', coverUrl: ''});
+
+  const canUploadCover = session?.runtime === 'cloudflare-api';
+  const formCoverUrl = getCoverImageUrl(formData.coverObjectKey, formData.coverUrl);
+  const hasLegacyCover = !formData.coverObjectKey && Boolean(formData.coverUrl);
 
   async function loadBooks() {
     setIsBooksLoading(true);
@@ -204,7 +216,6 @@ export default function App() {
           publisher: info?.publisher || '',
           year: info?.publishedDate || '',
           isbn: cleanIsbn,
-          coverUrl: info?.imageLinks?.thumbnail?.replace('http:', 'https:') || '',
         }));
 
         toast.success('已从 Google Books 自动补全。', {id: 'isbn-fetch'});
@@ -234,7 +245,6 @@ export default function App() {
           publisher: bookData.publishers?.map((item) => item.name).filter(Boolean).join(', ') || '',
           year: bookData.publish_date || '',
           isbn: cleanIsbn,
-          coverUrl: bookData.cover?.large || bookData.cover?.medium || '',
         }));
 
         toast.success('已从 Open Library 自动补全。', {id: 'isbn-fetch'});
@@ -395,6 +405,10 @@ export default function App() {
   function openModal(book?: Book) {
     if (book) {
       setEditingBook(book);
+      initialCoverRef.current = {
+        coverObjectKey: book.coverObjectKey,
+        coverUrl: book.coverUrl,
+      };
       setFormData({
         title: book.title,
         author: book.author,
@@ -404,9 +418,14 @@ export default function App() {
         location: book.location,
         status: book.status,
         coverUrl: book.coverUrl,
+        coverObjectKey: book.coverObjectKey,
       });
     } else {
       setEditingBook(null);
+      initialCoverRef.current = {
+        coverObjectKey: '',
+        coverUrl: '',
+      };
       setFormData({
         ...emptyForm,
         location: activeTab === '全部' ? '成都' : activeTab,
@@ -416,13 +435,36 @@ export default function App() {
     setIsModalOpen(true);
   }
 
-  async function closeModal() {
+  async function cleanupUnsavedCoverUpload() {
+    const initialCoverObjectKey = initialCoverRef.current.coverObjectKey;
+
+    if (!formData.coverObjectKey || formData.coverObjectKey === initialCoverObjectKey) {
+      return;
+    }
+
+    try {
+      await deleteUploadedCover(formData.coverObjectKey);
+    } catch {
+      // Ignore temporary cover cleanup failures.
+    }
+  }
+
+  async function closeModal(options?: {preserveUploadedCover?: boolean}) {
+    if (!options?.preserveUploadedCover) {
+      await cleanupUnsavedCoverUpload();
+    }
+
     await stopScanner();
     setCameraOptions([]);
     setActiveCameraId('');
     setEditingBook(null);
     setFormData(emptyForm);
     setIsModalOpen(false);
+    setIsUploadingCover(false);
+    initialCoverRef.current = {
+      coverObjectKey: '',
+      coverUrl: '',
+    };
   }
 
   function startScanner() {
@@ -476,6 +518,9 @@ export default function App() {
     setIsSaving(true);
 
     try {
+      const previousCoverObjectKey = initialCoverRef.current.coverObjectKey;
+      const nextCoverObjectKey = formData.coverObjectKey;
+
       if (editingBook) {
         await updateBook(editingBook.id, formData);
         toast.success('书籍信息已更新。');
@@ -484,7 +529,11 @@ export default function App() {
         toast.success('新书已加入书库。');
       }
 
-      await closeModal();
+      if (previousCoverObjectKey && previousCoverObjectKey !== nextCoverObjectKey) {
+        void deleteUploadedCover(previousCoverObjectKey).catch(() => undefined);
+      }
+
+      await closeModal({preserveUploadedCover: true});
       await loadBooks();
     } catch (error) {
       const message = error instanceof Error ? error.message : '保存失败。';
@@ -508,6 +557,61 @@ export default function App() {
     } finally {
       setIsDeleting(false);
     }
+  }
+
+  async function handleCoverFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      toast.error('请选择图片文件。');
+      return;
+    }
+
+    setIsUploadingCover(true);
+
+    try {
+      const currentCoverObjectKey = formData.coverObjectKey;
+      const initialCoverObjectKey = initialCoverRef.current.coverObjectKey;
+      const uploaded = await uploadCover(file);
+
+      if (currentCoverObjectKey && currentCoverObjectKey !== initialCoverObjectKey) {
+        void deleteUploadedCover(currentCoverObjectKey).catch(() => undefined);
+      }
+
+      setFormData((current) => ({
+        ...current,
+        coverObjectKey: uploaded.coverObjectKey,
+      }));
+      toast.success('封面已上传到 R2。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '上传封面失败。';
+      toast.error(message);
+    } finally {
+      setIsUploadingCover(false);
+    }
+  }
+
+  async function handleRemoveCover() {
+    const initialCoverObjectKey = initialCoverRef.current.coverObjectKey;
+
+    if (formData.coverObjectKey && formData.coverObjectKey !== initialCoverObjectKey) {
+      try {
+        await deleteUploadedCover(formData.coverObjectKey);
+      } catch {
+        // Ignore temporary cover cleanup failures.
+      }
+    }
+
+    setFormData((current) => ({
+      ...current,
+      coverUrl: '',
+      coverObjectKey: '',
+    }));
   }
 
   function handleLogout() {
@@ -655,7 +759,10 @@ export default function App() {
 
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5">
           <AnimatePresence mode="popLayout">
-            {filteredBooks.map((book) => (
+            {filteredBooks.map((book) => {
+              const coverImageUrl = getCoverImageUrl(book.coverObjectKey, book.coverUrl);
+
+              return (
               <motion.div
                 key={book.id}
                 layout
@@ -666,12 +773,13 @@ export default function App() {
                 className="group relative overflow-hidden rounded-3xl bg-white border border-gray-100 shadow-sm hover:shadow-xl transition-all cursor-pointer"
               >
                 <div className="aspect-[3/4] bg-gray-100 relative overflow-hidden">
-                  {book.coverUrl ? (
+                  {coverImageUrl ? (
                     <img
-                      src={book.coverUrl}
+                      src={coverImageUrl}
                       alt={book.title}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                       referrerPolicy="no-referrer"
+                      loading="lazy"
                     />
                   ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center p-5 text-center bg-[radial-gradient(circle_at_top,_#f8f0d7,_#ece8de_60%)]">
@@ -721,7 +829,8 @@ export default function App() {
                   <p className="text-xs text-gray-400 mt-2 line-clamp-1">{book.publisher || '未填写出版社'}{book.year ? ` · ${book.year}` : ''}</p>
                 </div>
               </motion.div>
-            ))}
+              );
+            })}
           </AnimatePresence>
         </div>
 
@@ -923,13 +1032,63 @@ export default function App() {
                         />
                       </div>
                       <div>
-                        <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">封面图片 URL</label>
-                        <input
-                          type="text"
-                          value={formData.coverUrl}
-                          onChange={(event) => setFormData({...formData, coverUrl: event.target.value})}
-                          className="w-full rounded-2xl bg-gray-50 border border-gray-200 px-4 py-3 outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500"
-                        />
+                        <label className="block text-xs uppercase tracking-[0.25em] text-gray-400 mb-2">封面图片</label>
+                        <div className="rounded-3xl border border-dashed border-gray-200 bg-gray-50 p-4">
+                          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                            <div className="w-full sm:w-36 shrink-0">
+                              <div className="aspect-[3/4] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+                                {formCoverUrl ? (
+                                  <img src={formCoverUrl} alt="封面预览" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                                ) : (
+                                  <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-[radial-gradient(circle_at_top,_#f8f0d7,_#ece8de_60%)] px-4 text-center text-gray-500">
+                                    <Image size={26} className="text-emerald-700" />
+                                    <span className="text-xs font-semibold leading-5">上传后会存入 R2</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex-1 space-y-3">
+                              <input type="file" accept="image/*" onChange={(event) => void handleCoverFileChange(event)} className="hidden" id="cover-upload-input" disabled={!canUploadCover || isUploadingCover} />
+                              <div className="flex flex-wrap gap-3">
+                                <label
+                                  htmlFor="cover-upload-input"
+                                  className={`inline-flex cursor-pointer items-center gap-2 rounded-2xl px-4 py-3 font-bold transition-colors ${
+                                    canUploadCover
+                                      ? 'bg-emerald-700 text-white hover:bg-emerald-800'
+                                      : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                  }`}
+                                >
+                                  {isUploadingCover ? <Loader2 className="animate-spin" size={18} /> : <Upload size={18} />}
+                                  {formCoverUrl ? '更换封面' : '上传封面'}
+                                </label>
+
+                                {formCoverUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleRemoveCover()}
+                                    className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-3 font-bold text-gray-700 border border-gray-200 hover:bg-gray-100 transition-colors"
+                                  >
+                                    <X size={18} />
+                                    移除封面
+                                  </button>
+                                )}
+                              </div>
+
+                              <p className="text-sm leading-6 text-gray-500">
+                                {canUploadCover
+                                  ? '支持 JPG、PNG、WEBP、GIF、AVIF，单张不超过 10MB。新上传的封面会优先显示，并存入 Cloudflare R2。'
+                                  : '当前是 localStorage 模式，只能浏览已有封面；如需上传，请切到 API 模式并启动 Worker + R2。'}
+                              </p>
+
+                              {hasLegacyCover && (
+                                <p className="text-sm leading-6 text-amber-700">
+                                  这本书当前显示的是历史外链封面。上传新封面后会优先使用 R2 中的图片。
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
 

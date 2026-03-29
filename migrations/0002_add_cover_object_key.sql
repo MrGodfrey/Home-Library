@@ -1,0 +1,1 @@
+ALTER TABLE books ADD COLUMN cover_object_key TEXT NOT NULL DEFAULT '';

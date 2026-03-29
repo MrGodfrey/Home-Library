@@ -20,6 +20,13 @@
 			"database_id": "e4005a50-ccf1-450d-a1e7-23788d76995a"
 		}
 	],
+	"r2_buckets": [
+		{
+			"binding": "BOOK_COVERS",
+			"bucket_name": "homelibrary",
+			"preview_bucket_name": "homelibrary-preview"
+		}
+	],
 	"observability": {
 		"enabled": true
 	},
