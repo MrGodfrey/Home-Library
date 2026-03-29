@@ -55,6 +55,24 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function normalizeTeamDomain(value: string) {
+  const trimmed = value.trim().replace(/^['\"]|['\"]$/g, '').replace(/\/+$/, '');
+
+  if (!trimmed) {
+    return '';
+  }
+
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  try {
+    return new URL(candidate).origin;
+  } catch {
+    throw new Error(
+      'TEAM_DOMAIN 配置无效，请填写 Zero Trust team 域名，例如 https://your-team.cloudflareaccess.com',
+    );
+  }
+}
+
 function normalizePayload(payload: BookPayload) {
   if (!isNonEmptyString(payload.title)) {
     throw new Error('书名不能为空。');
@@ -94,7 +112,7 @@ async function getIdentity(request: Request, env: WorkerEnv): Promise<AuthResult
   }
 
   const token = request.headers.get('cf-access-jwt-assertion');
-  const teamDomain = typeof env.TEAM_DOMAIN === 'string' ? env.TEAM_DOMAIN : '';
+  const teamDomain = normalizeTeamDomain(typeof env.TEAM_DOMAIN === 'string' ? env.TEAM_DOMAIN : '');
   const policyAud = typeof env.POLICY_AUD === 'string' ? env.POLICY_AUD : '';
 
   if (!token) {
@@ -110,7 +128,7 @@ async function getIdentity(request: Request, env: WorkerEnv): Promise<AuthResult
     throw new Error('缺少 TEAM_DOMAIN 或 POLICY_AUD 配置，无法校验 Cloudflare Access JWT。');
   }
 
-  const jwks = createRemoteJWKSet(new URL(`${teamDomain}/cdn-cgi/access/certs`));
+  const jwks = createRemoteJWKSet(new URL('/cdn-cgi/access/certs', `${teamDomain}/`));
   const {payload} = await jwtVerify(token, jwks, {
     issuer: teamDomain,
     audience: policyAud,
