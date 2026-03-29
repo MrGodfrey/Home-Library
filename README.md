@@ -6,7 +6,7 @@
 当前仓库已经脱离 Firebase 运行时依赖：
 
 - 本地快速测试模式使用浏览器 localStorage，不依赖任何线上服务。
-- 生产部署目标是 Cloudflare Pages + Pages Functions + D1。
+- 生产部署目标是 Cloudflare Workers + Workers Static Assets + D1。
 - 生产登录由 Cloudflare Zero Trust Access 统一处理，站内不再维护用户名密码。
 
 ## 当前能力
@@ -63,8 +63,8 @@ npm run dev
 
 推荐使用以下组合：
 
-- Cloudflare Pages：托管前端静态资源。
-- Cloudflare Pages Functions：提供 `/api/session`、`/api/books` 等接口。
+- Cloudflare Workers：承载 `/api/session`、`/api/books` 等接口。
+- Cloudflare Workers Static Assets：托管前端静态资源与 SPA 路由回退。
 - Cloudflare D1：存储书籍数据。
 - Cloudflare Zero Trust Access：保护整个站点，只允许两位固定用户访问。
 - Cloudflare DNS：接入你现有的独立域名。
@@ -93,12 +93,16 @@ npm run dev
 
 - `library.example.com`
 
-### 2. 创建 Pages 项目
+### 2. 配置 Wrangler 与 Worker
 
-在 Cloudflare Pages 中连接这个 GitHub 仓库，构建配置如下：
+本仓库已经提供 Worker 配置文件 [wrangler.jsonc](wrangler.jsonc)。关键配置如下：
 
-- Build command: `npm run build`
-- Build output directory: `dist`
+- `main`: `worker/index.ts`
+- `assets.directory`: `dist`
+- `assets.not_found_handling`: `single-page-application`
+- `assets.run_worker_first`: `['/api/*']`
+
+首次部署前，请把 [wrangler.jsonc](wrangler.jsonc) 里的 `database_id` 从 `TODO_REPLACE_WITH_D1_DATABASE_ID` 改成你自己的 D1 数据库 ID。
 
 ### 3. 创建 D1 数据库
 
@@ -106,20 +110,28 @@ npm run dev
 
 - Database name: `home-library`
 
-然后把它绑定到 Pages 项目，绑定名使用：
+然后把它绑定到 Worker，绑定名使用：
 
 - `DB`
 
 本仓库已经提供了初始表结构，见 [migrations/0001_init.sql](migrations/0001_init.sql)。
 
-### 4. 配置 Pages Functions 环境变量
+初始化数据库示例：
 
-在 Pages 项目的 Environment Variables 中添加：
+```bash
+npx wrangler d1 migrations apply home-library --remote
+```
+
+### 4. 配置 Worker 环境变量
+
+在 Cloudflare Worker 的 Variables / Secrets 中添加：
 
 - `TEAM_DOMAIN`：你的 Zero Trust team 域名，例如 `https://your-team.cloudflareaccess.com`
 - `POLICY_AUD`：目标 Access 应用的 AUD tag
 - `ALLOW_DEV_AUTH`：生产环境不要设置为 `true`
 - `DEV_ACCESS_EMAIL`：仅本地或预览联调用，可选
+
+如果你使用 Wrangler CLI，也可以用 `wrangler secret put` 写入敏感值。
 
 ### 5. 配置 Zero Trust Access
 
@@ -140,9 +152,23 @@ npm run dev
 
 不推荐本项目使用 Google OAuth 作为唯一入口，因为你的使用环境包含中国大陆，邮箱 OTP 的可用性通常更稳妥。
 
-### 6. 将自定义域名绑定到 Pages
+### 6. 部署 Worker
 
-在 Pages 项目中把 `library.example.com` 绑定到生产环境。HTTPS 由 Cloudflare 自动提供。
+仓库已经在 [wrangler.jsonc](wrangler.jsonc) 中配置了构建命令，所以可以直接部署：
+
+```bash
+npm run deploy
+```
+
+或者：
+
+```bash
+npx wrangler deploy
+```
+
+### 7. 将自定义域名绑定到 Worker
+
+在 Cloudflare Dashboard 中为这个 Worker 绑定 `library.example.com`。HTTPS 由 Cloudflare 自动提供。
 
 ## 生产环境的认证流
 
@@ -150,8 +176,8 @@ npm run dev
 
 1. 用户先访问 `library.example.com`
 2. Cloudflare Access 判断是否在允许名单内
-3. Access 认证通过后，才会把请求转发到 Pages
-4. Pages Functions 再校验 `Cf-Access-Jwt-Assertion`
+3. Access 认证通过后，才会把请求转发到 Worker
+4. Worker 再校验 `Cf-Access-Jwt-Assertion`
 5. API 从 JWT 中提取邮箱，作为当前操作用户
 
 ### 应用内表现
@@ -172,22 +198,29 @@ npm run dev
 
 - 由 `VITE_DATA_MODE=api` 控制。
 - 前端调用 `/api/session` 与 `/api/books`。
-- 适合接 Cloudflare Pages Functions 和 D1。
+- 适合接 Cloudflare Worker 和 D1。
 
-如果你本地已经跑起了 Cloudflare Functions 开发服务，还可以设置：
+如果你本地已经跑起了 Cloudflare Worker 开发服务，还可以设置：
 
 ```env
 VITE_API_PROXY_TARGET="http://127.0.0.1:8788"
 VITE_DATA_MODE="api"
 ```
 
-这样 Vite 会把 `/api` 请求代理给本地 Functions 服务。
+这样 Vite 会把 `/api` 请求代理给本地 Worker 服务。
+
+对应的本地 Worker 命令：
+
+```bash
+npm run worker:dev
+```
 
 ## 项目结构
 
 - [src/App.tsx](src/App.tsx)：主界面与交互。
 - [src/lib/library.ts](src/lib/library.ts)：本地存储 / API 双模式数据层。
-- [functions/api/[[route]].ts](functions/api/[[route]].ts)：Cloudflare Pages Functions API。
+- [worker/index.ts](worker/index.ts)：Cloudflare Worker API 入口。
+- [wrangler.jsonc](wrangler.jsonc)：Worker 构建、静态资源和 D1 绑定配置。
 - [migrations/0001_init.sql](migrations/0001_init.sql)：D1 初始建表脚本。
 - [public/manifest.webmanifest](public/manifest.webmanifest)：PWA manifest。
 - [public/sw.js](public/sw.js)：最小化 service worker。

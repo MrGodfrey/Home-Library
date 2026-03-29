@@ -18,6 +18,29 @@ interface AuthResult {
   message?: string;
 }
 
+interface DbStatement {
+  bind: (...values: unknown[]) => {
+    first: <T = unknown>() => Promise<T | null>;
+    all: <T = unknown>() => Promise<{results: T[]}>;
+    run: () => Promise<unknown>;
+  };
+  first: <T = unknown>() => Promise<T | null>;
+  all: <T = unknown>() => Promise<{results: T[]}>;
+  run: () => Promise<unknown>;
+}
+
+interface DatabaseBinding {
+  prepare: (sql: string) => DbStatement;
+}
+
+interface WorkerEnv {
+  DB?: DatabaseBinding;
+  ALLOW_DEV_AUTH?: string;
+  DEV_ACCESS_EMAIL?: string;
+  TEAM_DOMAIN?: string;
+  POLICY_AUD?: string;
+}
+
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -57,7 +80,7 @@ function normalizePayload(payload: BookPayload) {
   };
 }
 
-async function getIdentity(request: Request, env: Record<string, unknown>): Promise<AuthResult> {
+async function getIdentity(request: Request, env: WorkerEnv): Promise<AuthResult> {
   const allowDevAuth = env.ALLOW_DEV_AUTH === 'true';
   const devEmail = request.headers.get('x-dev-access-email') || String(env.DEV_ACCESS_EMAIL || '');
 
@@ -102,28 +125,15 @@ async function getIdentity(request: Request, env: Record<string, unknown>): Prom
   };
 }
 
-async function requireDb(env: Record<string, unknown>) {
-  const db = env.DB as {
-    prepare: (sql: string) => {
-      bind: (...values: unknown[]) => {
-        first: <T = unknown>() => Promise<T | null>;
-        all: <T = unknown>() => Promise<{results: T[]}>;
-        run: () => Promise<unknown>;
-      };
-      first: <T = unknown>() => Promise<T | null>;
-      all: <T = unknown>() => Promise<{results: T[]}>;
-      run: () => Promise<unknown>;
-    };
-  } | undefined;
-
-  if (!db) {
-    throw new Error('未找到 D1 绑定，请在 Cloudflare Pages 中绑定名为 DB 的 D1 数据库。');
+async function requireDb(env: WorkerEnv) {
+  if (!env.DB) {
+    throw new Error('未找到 D1 绑定，请在 Cloudflare Worker 中绑定名为 DB 的 D1 数据库。');
   }
 
-  return db;
+  return env.DB;
 }
 
-async function handleSession(request: Request, env: Record<string, unknown>) {
+async function handleSession(request: Request, env: WorkerEnv) {
   const auth = await getIdentity(request, env);
 
   if (!auth.authenticated) {
@@ -148,7 +158,7 @@ async function handleSession(request: Request, env: Record<string, unknown>) {
   });
 }
 
-async function handleListBooks(request: Request, env: Record<string, unknown>) {
+async function handleListBooks(request: Request, env: WorkerEnv) {
   const auth = await getIdentity(request, env);
 
   if (!auth.authenticated) {
@@ -181,7 +191,7 @@ async function handleListBooks(request: Request, env: Record<string, unknown>) {
   return json({books: result.results});
 }
 
-async function handleCreateBook(request: Request, env: Record<string, unknown>) {
+async function handleCreateBook(request: Request, env: WorkerEnv) {
   const auth = await getIdentity(request, env);
 
   if (!auth.authenticated || !auth.email) {
@@ -249,7 +259,7 @@ async function handleCreateBook(request: Request, env: Record<string, unknown>) 
   return json({book}, 201);
 }
 
-async function handleUpdateBook(request: Request, env: Record<string, unknown>, id: string) {
+async function handleUpdateBook(request: Request, env: WorkerEnv, id: string) {
   const auth = await getIdentity(request, env);
 
   if (!auth.authenticated) {
@@ -319,7 +329,7 @@ async function handleUpdateBook(request: Request, env: Record<string, unknown>, 
   return json({book});
 }
 
-async function handleDeleteBook(request: Request, env: Record<string, unknown>, id: string) {
+async function handleDeleteBook(request: Request, env: WorkerEnv, id: string) {
   const auth = await getIdentity(request, env);
 
   if (!auth.authenticated) {
@@ -341,36 +351,37 @@ async function handleDeleteBook(request: Request, env: Record<string, unknown>, 
   return json({success: true});
 }
 
-export async function onRequest(context: {request: Request; env: Record<string, unknown>}) {
-  const {request, env} = context;
-  const url = new URL(request.url);
-  const path = url.pathname.replace(/^\/api\/?/, '');
-  const segments = path.split('/').filter(Boolean);
+export default {
+  async fetch(request: Request, env: WorkerEnv) {
+    const url = new URL(request.url);
+    const path = url.pathname.replace(/^\/api\/?/, '');
+    const segments = path.split('/').filter(Boolean);
 
-  try {
-    if (segments.length === 1 && segments[0] === 'session' && request.method === 'GET') {
-      return await handleSession(request, env);
+    try {
+      if (segments.length === 1 && segments[0] === 'session' && request.method === 'GET') {
+        return await handleSession(request, env);
+      }
+
+      if (segments.length === 1 && segments[0] === 'books' && request.method === 'GET') {
+        return await handleListBooks(request, env);
+      }
+
+      if (segments.length === 1 && segments[0] === 'books' && request.method === 'POST') {
+        return await handleCreateBook(request, env);
+      }
+
+      if (segments.length === 2 && segments[0] === 'books' && request.method === 'PUT') {
+        return await handleUpdateBook(request, env, segments[1]);
+      }
+
+      if (segments.length === 2 && segments[0] === 'books' && request.method === 'DELETE') {
+        return await handleDeleteBook(request, env, segments[1]);
+      }
+
+      return json({error: '未找到接口。'}, 404);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '未知错误';
+      return json({error: message}, 500);
     }
-
-    if (segments.length === 1 && segments[0] === 'books' && request.method === 'GET') {
-      return await handleListBooks(request, env);
-    }
-
-    if (segments.length === 1 && segments[0] === 'books' && request.method === 'POST') {
-      return await handleCreateBook(request, env);
-    }
-
-    if (segments.length === 2 && segments[0] === 'books' && request.method === 'PUT') {
-      return await handleUpdateBook(request, env, segments[1]);
-    }
-
-    if (segments.length === 2 && segments[0] === 'books' && request.method === 'DELETE') {
-      return await handleDeleteBook(request, env, segments[1]);
-    }
-
-    return json({error: '未找到接口。'}, 404);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : '未知错误';
-    return json({error: message}, 500);
-  }
-}
+  },
+};
