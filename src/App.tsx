@@ -28,6 +28,16 @@ import {
   type SessionInfo,
 } from './lib/library';
 
+type ScannerInstance = {
+  clear: () => void;
+  stop: () => Promise<void>;
+};
+
+type CameraOption = {
+  id: string;
+  label: string;
+};
+
 const emptyForm: BookDraft = {
   title: '',
   author: '',
@@ -84,11 +94,15 @@ export default function App() {
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
+  const [cameraOptions, setCameraOptions] = useState<CameraOption[]>([]);
+  const [activeCameraId, setActiveCameraId] = useState<string>('');
+  const [isScannerStarting, setIsScannerStarting] = useState(false);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [activeBookId, setActiveBookId] = useState<string | null>(null);
   const [formData, setFormData] = useState<BookDraft>(emptyForm);
-  const scannerRef = useRef<{clear: () => Promise<void>} | null>(null);
+  const scannerRef = useRef<ScannerInstance | null>(null);
+  const scannerStartTokenRef = useRef(0);
 
   async function loadBooks() {
     setIsBooksLoading(true);
@@ -130,13 +144,21 @@ export default function App() {
 
     if (scanner) {
       try {
-        await scanner.clear();
+        await scanner.stop();
+      } catch {
+        // Ignore scanner cleanup errors.
+      }
+
+      try {
+        scanner.clear();
       } catch {
         // Ignore scanner cleanup errors.
       }
     }
 
+    scannerStartTokenRef.current += 1;
     scannerRef.current = null;
+    setIsScannerStarting(false);
     setIsScanning(false);
   }
 
@@ -225,6 +247,151 @@ export default function App() {
     }
   }
 
+  function normalizeIsbn(candidate: string) {
+    return candidate.replace(/[^0-9Xx]/g, '').toUpperCase();
+  }
+
+  function extractIsbnFromScan(decodedText: string) {
+    const directMatch = normalizeIsbn(decodedText);
+
+    if (directMatch.length === 10 || directMatch.length === 13) {
+      return directMatch;
+    }
+
+    const embeddedMatch = decodedText.match(/(?:97[89][0-9]{10}|[0-9]{9}[0-9Xx])/);
+
+    if (!embeddedMatch) {
+      return '';
+    }
+
+    return normalizeIsbn(embeddedMatch[0]);
+  }
+
+  function getPreferredCamera(cameras: CameraOption[]) {
+    if (activeCameraId && cameras.some((camera) => camera.id === activeCameraId)) {
+      return activeCameraId;
+    }
+
+    const rearCamera = cameras.find((camera) => /back|rear|environment|wide/i.test(camera.label));
+
+    return rearCamera?.id || cameras[0]?.id || '';
+  }
+
+  async function runScannerWithCamera(cameraId?: string) {
+    const targetToken = ++scannerStartTokenRef.current;
+    setIsScannerStarting(true);
+
+    try {
+      const {Html5Qrcode, Html5QrcodeSupportedFormats} = await import('html5-qrcode');
+      const nextScanner = new Html5Qrcode('reader', {
+        verbose: false,
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.UPC_EAN_EXTENSION,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+        ],
+        useBarCodeDetectorIfSupported: true,
+      });
+
+      const cameras = (await Html5Qrcode.getCameras()).map((camera) => ({
+        id: camera.id,
+        label: camera.label || '未命名摄像头',
+      }));
+
+      if (targetToken !== scannerStartTokenRef.current) {
+        return;
+      }
+
+      if (cameras.length > 0) {
+        setCameraOptions(cameras);
+      }
+
+      const preferredCameraId = cameraId || getPreferredCamera(cameras);
+
+      await nextScanner.start(
+        preferredCameraId
+          ? preferredCameraId
+          : {
+              facingMode: {exact: 'environment'},
+            },
+        {
+          fps: 12,
+          qrbox: {width: 260, height: 160},
+          aspectRatio: 1.777778,
+          disableFlip: false,
+        },
+        (decodedText) => {
+          const isbn = extractIsbnFromScan(decodedText);
+
+          if (!isbn) {
+            return;
+          }
+
+          setFormData((current) => ({
+            ...current,
+            isbn,
+          }));
+
+          void stopScanner();
+          void fetchBookInfo(isbn);
+        },
+        () => undefined,
+      );
+
+      if (targetToken !== scannerStartTokenRef.current) {
+        try {
+          await nextScanner.stop();
+        } catch {
+          // Ignore scanner cleanup errors.
+        }
+        nextScanner.clear();
+        return;
+      }
+
+      scannerRef.current = nextScanner;
+      setActiveCameraId(preferredCameraId);
+      setIsScannerStarting(false);
+    } catch (error) {
+      if (targetToken !== scannerStartTokenRef.current) {
+        return;
+      }
+
+      setIsScannerStarting(false);
+      const message = error instanceof Error ? error.message : String(error);
+
+      if (!cameraId && /environment|facingmode/i.test(message)) {
+        try {
+          const {Html5Qrcode} = await import('html5-qrcode');
+          const cameras = (await Html5Qrcode.getCameras()).map((camera) => ({
+            id: camera.id,
+            label: camera.label || '未命名摄像头',
+          }));
+
+          if (targetToken !== scannerStartTokenRef.current) {
+            return;
+          }
+
+          setCameraOptions(cameras);
+          const fallbackCameraId = getPreferredCamera(cameras);
+
+          if (fallbackCameraId) {
+            await runScannerWithCamera(fallbackCameraId);
+            return;
+          }
+        } catch {
+          // Fall through to generic error handling.
+        }
+      }
+
+      await stopScanner();
+      toast.error('无法启动扫码，请检查相机权限或改用其他摄像头。');
+    }
+  }
+
   function openModal(book?: Book) {
     if (book) {
       setEditingBook(book);
@@ -251,31 +418,51 @@ export default function App() {
 
   async function closeModal() {
     await stopScanner();
+    setCameraOptions([]);
+    setActiveCameraId('');
     setEditingBook(null);
     setFormData(emptyForm);
     setIsModalOpen(false);
   }
 
   function startScanner() {
+    if (isScanning || isScannerStarting) {
+      return;
+    }
+
     setIsScanning(true);
+    setCameraOptions([]);
 
     window.setTimeout(async () => {
-      try {
-        const {Html5QrcodeScanner} = await import('html5-qrcode');
-        const scanner = new Html5QrcodeScanner('reader', {fps: 10, qrbox: {width: 240, height: 240}}, false);
-        scannerRef.current = scanner;
-        scanner.render(
-          (decodedText) => {
-            void stopScanner();
-            void fetchBookInfo(decodedText);
-          },
-          () => undefined,
-        );
-      } catch {
-        setIsScanning(false);
-        toast.error('扫码模块加载失败，请稍后重试。');
-      }
+      await runScannerWithCamera();
     }, 120);
+  }
+
+  async function handleCameraChange(cameraId: string) {
+    if (!cameraId || cameraId === activeCameraId) {
+      return;
+    }
+
+    const currentScanner = scannerRef.current;
+    setActiveCameraId(cameraId);
+
+    if (currentScanner) {
+      try {
+        await currentScanner.stop();
+      } catch {
+        // Ignore scanner cleanup errors.
+      }
+
+      try {
+        currentScanner.clear();
+      } catch {
+        // Ignore scanner cleanup errors.
+      }
+
+      scannerRef.current = null;
+    }
+
+    await runScannerWithCamera(cameraId);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -663,7 +850,37 @@ export default function App() {
 
                     {isScanning && (
                       <div className="mt-4 rounded-2xl overflow-hidden bg-black relative">
+                        <div className="absolute left-3 top-3 right-14 z-10 flex items-center gap-2">
+                          <label htmlFor="scanner-camera" className="sr-only">
+                            选择摄像头
+                          </label>
+                          <select
+                            id="scanner-camera"
+                            value={activeCameraId}
+                            onChange={(event) => void handleCameraChange(event.target.value)}
+                            disabled={isScannerStarting || cameraOptions.length === 0}
+                            className="scanner-select w-full rounded-xl border border-white/25 bg-black/60 px-3 py-2 text-sm text-white outline-none backdrop-blur disabled:opacity-60"
+                          >
+                            {cameraOptions.length === 0 ? (
+                              <option value="">正在加载摄像头...</option>
+                            ) : (
+                              cameraOptions.map((camera, index) => (
+                                <option key={camera.id} value={camera.id}>
+                                  {camera.label || `摄像头 ${index + 1}`}
+                                </option>
+                              ))
+                            )}
+                          </select>
+                        </div>
                         <div id="reader" />
+                        {isScannerStarting && (
+                          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/55 text-white">
+                            <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-sm backdrop-blur">
+                              <Loader2 className="animate-spin" size={16} />
+                              正在启动后置摄像头...
+                            </div>
+                          </div>
+                        )}
                         <button
                           type="button"
                           onClick={() => void stopScanner()}

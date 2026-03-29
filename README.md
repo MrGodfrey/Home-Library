@@ -168,7 +168,7 @@ npx wrangler deploy
 
 ### 7. 将自定义域名绑定到 Worker
 
-在 Cloudflare Dashboard 中为这个 Worker 绑定 `library.example.com`。HTTPS 由 Cloudflare 自动提供。
+此处可以在 Worker 的 Settings 中添加自定义域名，然后它会自动将这个域名绑定到这个 DNS 记录中。
 
 ## 生产环境的认证流
 

@@ -44,6 +44,13 @@
 #reader {
   border: none !important;
   @apply bg-black;
+  min-height: 16rem;
+}
+
+#reader video,
+#reader canvas {
+  width: 100% !important;
+  border-radius: 1rem;
 }
 
 #reader__scan_region {
@@ -56,6 +63,20 @@
 
 #reader__dashboard_section_csr button {
   @apply px-4 py-2 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition-all text-sm;
+}
+
+.scanner-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, white 50%), linear-gradient(135deg, white 50%, transparent 50%);
+  background-position: calc(100% - 18px) calc(50% - 2px), calc(100% - 12px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 2.75rem;
+}
+
+.scanner-select option {
+  color: #111827;
 }
 
 .safe-bottom {
